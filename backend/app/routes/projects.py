@@ -1,0 +1,988 @@
+from fastapi import APIRouter, Depends, HTTPException, status, Query, File, UploadFile
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from pydantic import BaseModel, Field, field_serializer
+from datetime import datetime
+import json
+import logging
+from urllib.parse import quote
+import uuid
+
+from app.services.project_service import ProjectService
+from app.services.tts_service import TTSService
+from database.models import Project, Generation, ProjectFolder, AudioCollection, AudioTag, ProjectShare, GenerationDraft
+from database.database import get_db
+from app.middleware.auth import get_current_user
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+def project_belongs_to_user(project: Project | None, user_id: str) -> bool:
+    return project is not None and str(project.user_id) == str(user_id)
+
+
+def parse_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(str(value))
+
+
+def serialize_uuid(value: str | uuid.UUID | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return str(value)
+
+
+def build_generation_response(
+    *,
+    generation_id: str | uuid.UUID,
+    project_id: str | uuid.UUID | None,
+    user_id: str | uuid.UUID,
+    text: str,
+    voice_id: str | uuid.UUID | None,
+    audio_path: str | None,
+    audio_url: str | None,
+    duration_seconds: float,
+    created_at: datetime,
+    file_format: str = "wav",
+    title: str | None = None,
+    folder_id: str | None = None,
+) -> "GenerationResponse":
+    normalized_id = serialize_uuid(generation_id)
+    normalized_user_id = serialize_uuid(user_id)
+
+    if normalized_id is None or normalized_user_id is None:
+        raise ValueError("Generation response requires generation_id and user_id")
+
+    return GenerationResponse(
+        id=normalized_id,
+        project_id=serialize_uuid(project_id),
+        user_id=normalized_user_id,
+        text=text,
+        text_prompt=text,
+        voice_id=serialize_uuid(voice_id),
+        audio_path=audio_path,
+        audio_file_path=audio_path,
+        file_format=file_format,
+        audio_url=audio_url,
+        title=title,
+        folder_id=folder_id,
+        duration_seconds=duration_seconds,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
+def build_generation_audio_url(audio_path: str | None) -> str | None:
+    if not audio_path:
+        return None
+    return f"/api/audio/proxy?path={quote(audio_path, safe='')}"
+
+
+def serialize_generation(generation: Generation) -> "GenerationResponse":
+    return build_generation_response(
+        generation_id=generation.id,
+        project_id=generation.project_id,
+        user_id=generation.user_id,
+        text=generation.text_prompt,
+        voice_id=generation.voice_id,
+        audio_path=generation.audio_path,
+        audio_url=build_generation_audio_url(generation.audio_path),
+        duration_seconds=generation.duration_seconds,
+        created_at=generation.created_at,
+        file_format=generation.file_format,
+        title=generation.title,
+        folder_id=serialize_uuid(generation.folder_id),
+    )
+
+# ==================== PYDANTIC MODELS ====================
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class ProjectResponse(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    name: str
+    description: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id', 'user_id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+class FolderCreate(BaseModel):
+    name: str
+    parent_folder_id: Optional[str] = None
+
+class FolderResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    parent_folder_id: Optional[uuid.UUID]
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id', 'project_id', 'parent_folder_id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+class CollectionCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    color: str = "#3b82f6"
+
+class CollectionResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    name: str
+    description: Optional[str]
+    color: str
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id', 'project_id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+class TagCreate(BaseModel):
+    name: str
+    color: str = "#10b981"
+
+class TagResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    name: str
+    color: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id', 'project_id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+class ShareCreate(BaseModel):
+    shared_with_user_id: str
+    permission: str = "viewer"  # viewer, editor, admin
+
+class ShareResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    shared_with_user_id: uuid.UUID
+    permission: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id', 'project_id', 'shared_with_user_id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+class DraftCreate(BaseModel):
+    text_prompt: str
+    voice_id: Optional[str] = None
+    speed: float = 1.0
+    pitch: float = 1.0
+    generation_id: Optional[str] = None
+
+class DraftResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    generation_id: Optional[uuid.UUID]
+    text_prompt: str
+    voice_id: Optional[str]
+    speed: float
+    pitch: float
+    saved_at: datetime
+    audio_url: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id', 'project_id', 'generation_id', 'voice_id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+class AnalyticsResponse(BaseModel):
+    project_id: str
+    total_generations: int
+    total_duration_seconds: float
+    total_characters: int
+    last_modified: str
+
+# ==================== TTS GENERATION MODELS ====================
+
+class GenerationRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=5000, description="Text to synthesize")
+    voice_id: str = Field(..., description="Voice model identifier (e.g., 'af_bella')")
+    speed: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
+    pitch: float = Field(1.0, ge=0.5, le=2.0, description="Pitch multiplier")
+    folder_id: Optional[str] = Field(None, description="Optional folder to save generation in")
+    title: Optional[str] = Field(None, max_length=255, description="Optional title for the generation")
+
+class GenerationResponse(BaseModel):
+    id: str
+    project_id: Optional[str] = None
+    user_id: str
+    text: str
+    text_prompt: str
+    voice_id: Optional[str] = None
+    audio_path: Optional[str] = None
+    audio_file_path: Optional[str] = None
+    file_format: str = "wav"
+    audio_url: Optional[str] = None
+    title: Optional[str] = None
+    folder_id: Optional[str] = None
+    duration_seconds: float
+    created_at: datetime
+    updated_at: datetime
+
+class VoiceResponse(BaseModel):
+    id: str
+    name: str
+    language: str
+    gender: str
+    
+    class Config:
+        from_attributes = True
+    
+    @field_serializer('id')
+    def serialize_uuid(self, value):
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+# ==================== PROJECT ENDPOINTS ====================
+
+@router.get("/", response_model=dict)
+def list_projects(
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all projects for the current user."""
+    logger.info(f"GET /api/projects called for user: {current_user}")
+    try:
+        projects = ProjectService.list_projects(db, current_user)
+        logger.info(f"Returning {len(projects)} projects for user: {current_user}")
+        serialized_projects = [
+            {
+                "id": str(project.id),
+                "user_id": str(project.user_id),
+                "name": project.name,
+                "description": project.description,
+                "created_at": project.created_at.isoformat() if project.created_at else None,
+                "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+            }
+            for project in projects
+        ]
+        return {"projects": serialized_projects}
+    except HTTPException as exc:
+        logger.error(
+            "HTTP error in GET /api/projects for user %s: %s",
+            current_user,
+            exc.detail,
+            exc_info=True,
+        )
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    except Exception as exc:
+        logger.exception("Unhandled error in GET /api/projects for user %s", current_user)
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+@router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+def create_project(
+    payload: ProjectCreate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new project."""
+    project = ProjectService.create_project(db, current_user, payload.name, payload.description)
+    return project
+
+@router.get("/{project_id}", response_model=ProjectResponse)
+def get_project(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get project details."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
+
+@router.put("/{project_id}", response_model=ProjectResponse)
+def update_project(
+    project_id: str,
+    payload: ProjectUpdate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update project."""
+    try:
+        project = ProjectService.get_project(db, project_id, current_user)
+        if not project_belongs_to_user(project, current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+        project = ProjectService.update_project(db, project_id, payload.name, payload.description)
+        return project
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update project %s", project_id)
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a project."""
+    try:
+        project = ProjectService.get_project(db, project_id, current_user)
+        if not project_belongs_to_user(project, current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+        ProjectService.delete_project(db, project_id)
+        return None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to delete project %s", project_id)
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+@router.get("/{project_id}/generations", response_model=List[GenerationResponse])
+def list_generations(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all saved generations in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    generations = ProjectService.list_generations(db, project_id)
+    return [serialize_generation(generation) for generation in generations]
+
+
+@router.get("/{project_id}/generations/{generation_id}", response_model=GenerationResponse)
+def get_generation(
+    project_id: str,
+    generation_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a single saved generation in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    generation = ProjectService.get_generation(db, generation_id, project_id)
+    if not generation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
+
+    return serialize_generation(generation)
+
+
+@router.delete("/{project_id}/generations/{generation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_generation(
+    project_id: str,
+    generation_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a saved generation in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    deleted = ProjectService.delete_generation(db, generation_id, project_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
+
+    return None
+
+# ==================== FOLDER ENDPOINTS ====================
+
+@router.get("/{project_id}/folders", response_model=List[FolderResponse])
+def list_folders(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all folders in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    
+    folders = ProjectService.get_folders(db, project_id)
+    return folders
+
+@router.post("/{project_id}/folders", response_model=FolderResponse, status_code=status.HTTP_201_CREATED)
+def create_folder(
+    project_id: str,
+    payload: FolderCreate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a folder in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    folder = ProjectService.create_folder(db, project_id, payload.name, payload.parent_folder_id)
+    return folder
+
+@router.delete("/{project_id}/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_folder(
+    project_id: str,
+    folder_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a folder."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    ProjectService.delete_folder(db, folder_id)
+    return None
+
+# ==================== COLLECTION ENDPOINTS ====================
+
+@router.get("/{project_id}/collections", response_model=List[CollectionResponse])
+def list_collections(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all collections in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    
+    collections = ProjectService.get_collections(db, project_id)
+    return collections
+
+@router.post("/{project_id}/collections", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
+def create_collection(
+    project_id: str,
+    payload: CollectionCreate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a collection."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    collection = ProjectService.create_collection(db, project_id, payload.name, payload.description, payload.color)
+    return collection
+
+@router.post("/{project_id}/collections/{collection_id}/audios/{generation_id}")
+def add_to_collection(
+    project_id: str,
+    collection_id: str,
+    generation_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Add audio to collection."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    success = ProjectService.add_to_collection(db, generation_id, collection_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to add to collection")
+    
+    return {"status": "success"}
+
+@router.delete("/{project_id}/collections/{collection_id}/audios/{generation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_from_collection(
+    project_id: str,
+    collection_id: str,
+    generation_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Remove audio from collection."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    ProjectService.remove_from_collection(db, generation_id, collection_id)
+    return None
+
+@router.delete("/{project_id}/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_collection(
+    project_id: str,
+    collection_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a collection."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    ProjectService.delete_collection(db, collection_id)
+    return None
+
+# ==================== TAG ENDPOINTS ====================
+
+@router.get("/{project_id}/tags", response_model=List[TagResponse])
+def list_tags(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all tags in a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    
+    tags = ProjectService.get_tags(db, project_id)
+    return tags
+
+@router.post("/{project_id}/tags", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
+def create_tag(
+    project_id: str,
+    payload: TagCreate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a tag."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    tag = ProjectService.create_tag(db, project_id, payload.name, payload.color)
+    return tag
+
+@router.post("/audios/{generation_id}/tags/{tag_id}")
+def tag_audio(
+    generation_id: str,
+    tag_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Tag an audio."""
+    success = ProjectService.tag_generation(db, generation_id, tag_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to tag audio")
+    
+    return {"status": "success"}
+
+@router.delete("/audios/{generation_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_tag_from_audio(
+    generation_id: str,
+    tag_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Remove tag from audio."""
+    ProjectService.remove_tag(db, generation_id, tag_id)
+    return None
+
+@router.delete("/{project_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_tag(
+    project_id: str,
+    tag_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a tag."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    ProjectService.delete_tag(db, tag_id)
+    return None
+
+# ==================== SHARING ENDPOINTS ====================
+
+@router.get("/{project_id}/shares", response_model=List[ShareResponse])
+def list_shares(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all shares for a project."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    shares = ProjectService.get_shares(db, project_id)
+    return shares
+
+@router.post("/{project_id}/share", response_model=ShareResponse, status_code=status.HTTP_201_CREATED)
+def share_project(
+    project_id: str,
+    payload: ShareCreate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Share a project with another user."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    share = ProjectService.share_project(db, project_id, payload.shared_with_user_id, payload.permission)
+    return share
+
+@router.delete("/{project_id}/shares/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_share(
+    project_id: str,
+    share_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Revoke a project share."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    ProjectService.revoke_share(db, share_id)
+    return None
+
+# ==================== DRAFT ENDPOINTS ====================
+
+@router.get("/{project_id}/drafts", response_model=List[DraftResponse])
+def list_drafts(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all drafts in a project."""
+    logger.info("GET /api/projects/%s/drafts called for user: %s", project_id, current_user)
+    try:
+        project = ProjectService.get_project(db, project_id, current_user)
+        if not project:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+        drafts = ProjectService.get_drafts(db, project_id)
+        logger.info("Returning %s drafts for project %s", len(drafts), project_id)
+        return [
+            {
+                **DraftResponse.model_validate(draft, from_attributes=True).model_dump(),
+                "audio_url": (
+                    f"/api/audio/proxy?path={quote(draft.generation.audio_file_path, safe='')}"
+                    if draft.generation and draft.generation.audio_file_path
+                    else None
+                ),
+            }
+            for draft in drafts
+        ]
+    except HTTPException as exc:
+        logger.error(
+            "HTTP error in GET /api/projects/%s/drafts for user %s: %s",
+            project_id,
+            current_user,
+            exc.detail,
+            exc_info=True,
+        )
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    except Exception as exc:
+        logger.exception("Unhandled error in GET /api/projects/%s/drafts", project_id)
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+@router.post("/{project_id}/drafts", response_model=DraftResponse, status_code=status.HTTP_201_CREATED)
+def save_draft(
+    project_id: str,
+    payload: DraftCreate,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Save a draft."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    draft = ProjectService.save_draft(db, project_id, payload.text_prompt, payload.voice_id, 
+                                     payload.speed, payload.pitch, payload.generation_id)
+    return draft
+
+@router.delete("/{project_id}/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_draft(
+    project_id: str,
+    draft_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a draft."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    ProjectService.delete_draft(db, draft_id)
+    return None
+
+# ==================== TTS GENERATION ENDPOINTS ====================
+
+@router.get("/voices/available", response_model=List[VoiceResponse])
+def get_available_voices():
+    """Get list of available Kokoro voices."""
+    try:
+        voices_dict = TTSService.get_available_voices()
+        voices = [VoiceResponse(**voice) for voice in voices_dict.values()]
+        return voices
+    except Exception as e:
+        logger.error(f"Failed to get available voices: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load voices")
+
+# ==================== STANDALONE GENERATION ENDPOINT ====================
+
+@router.post("/generate/standalone", response_model=GenerationResponse, status_code=status.HTTP_201_CREATED)
+def generate_audio_standalone(
+    payload: GenerationRequest,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate audio without saving to a project.
+    
+    This endpoint synthesizes text into audio without requiring or storing to a project.
+    Useful for quick one-off generations.
+    """
+    try:
+        logger.info(f"Generating standalone audio for user {current_user}")
+        
+        # Generate audio using TTS service
+        audio_path, duration, audio_url = TTSService.generate_audio(
+            text=payload.text,
+            voice_id=payload.voice_id,
+            speed=payload.speed,
+            pitch=payload.pitch,
+            project_id=None,
+        )
+        
+        # Return generation response without saving to database
+        response = build_generation_response(
+            generation_id=uuid.uuid4(),
+            project_id=None,
+            user_id=current_user,
+            text=payload.text,
+            voice_id=payload.voice_id,
+            audio_path=audio_path,
+            audio_url=audio_url,
+            duration_seconds=duration,
+            created_at=datetime.utcnow(),
+            file_format="wav",
+            title=payload.title,
+            folder_id=payload.folder_id,
+        )
+        
+        logger.info(f"Standalone audio generated successfully")
+        
+        return response
+        
+    except ValueError as e:
+        logger.warning(f"Validation error: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except RuntimeError as e:
+        logger.error(f"TTS generation failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate audio")
+    except Exception as e:
+        logger.error(f"Unexpected error during generation: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+# ==================== PROJECT GENERATION ENDPOINT ====================
+
+@router.post("/{project_id}/generate", response_model=GenerationResponse, status_code=status.HTTP_201_CREATED)
+def generate_audio(
+    project_id: str,
+    payload: GenerationRequest,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate audio using Kokoro TTS.
+    
+    This endpoint synthesizes text into audio using the specified voice and parameters.
+    """
+    # Verify project ownership
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    try:
+        logger.info(f"Generating audio for user {current_user}, project {project_id}")
+        
+        # Generate audio using TTS service
+        audio_path, duration, audio_url = TTSService.generate_audio(
+            text=payload.text,
+            voice_id=payload.voice_id,
+            speed=payload.speed,
+            pitch=payload.pitch,
+            project_id=project_id,
+        )
+        
+        # Create generation record in database
+        generation = Generation(
+            project_id=parse_uuid(project_id),
+            user_id=parse_uuid(current_user),
+            voice_id=payload.voice_id,
+            text_prompt=payload.text,
+            speed=payload.speed,
+            pitch=payload.pitch,
+            duration_seconds=duration,
+            audio_path=audio_path,
+            file_format="wav",
+        )
+        db.add(generation)
+        db.commit()
+        db.refresh(generation)
+
+        response = build_generation_response(
+            generation_id=generation.id,
+            project_id=generation.project_id,
+            user_id=generation.user_id,
+            text=payload.text,
+            voice_id=payload.voice_id,
+            audio_path=generation.audio_path,
+            audio_url=audio_url,
+            duration_seconds=generation.duration_seconds,
+            created_at=generation.created_at,
+            file_format=generation.file_format,
+            title=payload.title,
+            folder_id=payload.folder_id,
+        )
+        
+        logger.info(f"Audio generated successfully: {generation.id}")
+        
+        return response
+        
+    except ValueError as e:
+        logger.warning(f"Validation error: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except RuntimeError as e:
+        logger.error(f"TTS generation failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate audio")
+    except Exception as e:
+        logger.error(f"Unexpected error during generation: {e}")
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+# ==================== ANALYTICS ENDPOINTS ====================
+
+@router.get("/{project_id}/analytics", response_model=AnalyticsResponse)
+def get_analytics(
+    project_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get project analytics."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    
+    analytics = ProjectService.get_project_analytics(db, project_id)
+    if not analytics:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analytics not found")
+    
+    return analytics
+
+# ==================== BULK OPERATIONS ====================
+
+@router.post("/{project_id}/bulk/delete")
+def bulk_delete(
+    project_id: str,
+    generation_ids: List[str],
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Bulk delete generations."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    count = ProjectService.bulk_delete_generations(db, generation_ids)
+    return {"deleted": count}
+
+@router.post("/{project_id}/bulk/tag")
+def bulk_tag(
+    project_id: str,
+    generation_ids: List[str],
+    tag_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Bulk tag generations."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    count = ProjectService.bulk_tag_generations(db, generation_ids, tag_id)
+    return {"tagged": count}
+
+@router.post("/{project_id}/bulk/collect")
+def bulk_collect(
+    project_id: str,
+    generation_ids: List[str],
+    collection_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Bulk add generations to collection."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    count = ProjectService.bulk_add_to_collection(db, generation_ids, collection_id)
+    return {"added": count}
+
+@router.post("/{project_id}/bulk/move")
+def bulk_move(
+    project_id: str,
+    generation_ids: List[str],
+    folder_id: str,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Bulk move generations to folder."""
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    
+    count = ProjectService.bulk_move_to_folder(db, generation_ids, folder_id)
+    return {"moved": count}
