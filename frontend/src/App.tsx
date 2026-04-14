@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+} from "react-router-dom";
 import { AuthProvider, useAuth } from "./services/auth";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
@@ -36,12 +42,17 @@ function ProtectedLayout() {
 
 function PublicOnlyRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
+
+  const isOAuthLinkVerificationRoute =
+    location.pathname === "/register" &&
+    new URLSearchParams(location.search).get("mode") === "oauth-link";
 
   if (isLoading) {
     return <AuthSplash />;
   }
 
-  if (isAuthenticated) {
+  if (isAuthenticated && !isOAuthLinkVerificationRoute) {
     return <Navigate to="/" replace />;
   }
 

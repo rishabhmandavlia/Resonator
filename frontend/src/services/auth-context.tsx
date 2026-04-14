@@ -3,12 +3,20 @@
  * Manages multi-account OAuth session state and account switching.
  */
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import {
   apiClient,
   type AuthProviderOption,
+  type ConnectedProviderSummary,
   type AuthSessionResponse,
+  type RegistrationChallengeResponse,
   type SessionAccountSummary,
 } from "./api";
 
@@ -16,12 +24,11 @@ export interface User {
   id: string;
   email: string | null;
   displayName: string | null;
-  provider: string;
-  providerLabel: string;
   accountId: string;
   avatarUrl: string | null;
   isValid: boolean;
   invalidReason: string | null;
+  providers: ConnectedProviderSummary[];
 }
 
 export interface AuthContextType {
@@ -34,12 +41,23 @@ export interface AuthContextType {
   hasValidActiveAccount: boolean;
   isLoading: boolean;
   error: string | null;
+  login: (email: string, password: string) => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+  ) => Promise<RegistrationChallengeResponse>;
+  verifyEmail: (email: string, otp: string) => Promise<void>;
+  resendOtp: (email: string) => Promise<RegistrationChallengeResponse>;
+  verifyOAuthLink: (email: string, otp: string) => Promise<void>;
+  resendOAuthLink: (email: string) => Promise<RegistrationChallengeResponse>;
   beginOAuthLogin: (
     provider: string,
     options?: { addAccount?: boolean },
   ) => void;
   switchAccount: (accountId: string) => Promise<void>;
   removeAccount: (accountId: string) => Promise<void>;
+  logoutAccount: (accountId: string) => Promise<void>;
+  logoutCurrentAccount: () => Promise<void>;
   logout: (accountId?: string) => Promise<void>;
   logoutAll: () => Promise<void>;
   refreshSession: () => Promise<void>;
@@ -65,7 +83,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   const activeAccount = useMemo(
-    () => accounts.find((account) => account.accountId === activeAccountId) || null,
+    () =>
+      accounts.find((account) => account.accountId === activeAccountId) || null,
     [accounts, activeAccountId],
   );
 
@@ -78,12 +97,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       id: activeAccount.userId,
       email: activeAccount.email,
       displayName: activeAccount.displayName,
-      provider: activeAccount.provider,
-      providerLabel: activeAccount.providerLabel,
       accountId: activeAccount.accountId,
       avatarUrl: activeAccount.avatarUrl,
       isValid: activeAccount.isValid,
       invalidReason: activeAccount.invalidReason,
+      providers: activeAccount.providers,
     };
   }, [activeAccount]);
 
@@ -97,7 +115,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const session = await apiClient.getAuthSession();
       applySessionState(session, setAccounts, setActiveAccountId);
     } catch (err: any) {
-      const errorMessage = err?.detail || err?.message || "Failed to refresh session";
+      const errorMessage =
+        err?.detail || err?.message || "Failed to refresh session";
       setError(errorMessage);
       setAccounts([]);
       setActiveAccountId(null);
@@ -117,7 +136,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setProviders(providerResponse.providers);
         applySessionState(sessionResponse, setAccounts, setActiveAccountId);
       } catch (err: any) {
-        const errorMessage = err?.detail || err?.message || "Failed to initialize authentication";
+        const errorMessage =
+          err?.detail || err?.message || "Failed to initialize authentication";
         setError(errorMessage);
         setAccounts([]);
         setActiveAccountId(null);
@@ -134,11 +154,101 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       void refreshSession();
     };
 
-    window.addEventListener("auth:unauthorized", handleUnauthorized as EventListener);
+    window.addEventListener(
+      "auth:unauthorized",
+      handleUnauthorized as EventListener,
+    );
     return () => {
-      window.removeEventListener("auth:unauthorized", handleUnauthorized as EventListener);
+      window.removeEventListener(
+        "auth:unauthorized",
+        handleUnauthorized as EventListener,
+      );
     };
   }, [accounts.length, activeAccountId]);
+
+  const login = async (email: string, password: string) => {
+    setError(null);
+    try {
+      const session = await apiClient.login(email, password);
+      applySessionState(session, setAccounts, setActiveAccountId);
+      await loadProviders();
+    } catch (err: any) {
+      const errorMessage = err?.detail || err?.message || "Failed to sign in";
+      setError(errorMessage);
+      throw err;
+    }
+  };
+
+  const register = async (
+    email: string,
+    password: string,
+  ): Promise<RegistrationChallengeResponse> => {
+    setError(null);
+    try {
+      return await apiClient.register(email, password);
+    } catch (err: any) {
+      const errorMessage =
+        err?.detail || err?.message || "Failed to start registration";
+      setError(errorMessage);
+      throw err;
+    }
+  };
+
+  const verifyEmail = async (email: string, otp: string) => {
+    setError(null);
+    try {
+      const session = await apiClient.verifyEmail(email, otp);
+      applySessionState(session, setAccounts, setActiveAccountId);
+      await loadProviders();
+    } catch (err: any) {
+      const errorMessage =
+        err?.detail || err?.message || "Failed to verify email";
+      setError(errorMessage);
+      throw err;
+    }
+  };
+
+  const resendOtp = async (
+    email: string,
+  ): Promise<RegistrationChallengeResponse> => {
+    setError(null);
+    try {
+      return await apiClient.resendOtp(email);
+    } catch (err: any) {
+      const errorMessage =
+        err?.detail || err?.message || "Failed to resend code";
+      setError(errorMessage);
+      throw err;
+    }
+  };
+
+  const verifyOAuthLink = async (email: string, otp: string) => {
+    setError(null);
+    try {
+      const session = await apiClient.verifyOAuthLink(email, otp);
+      applySessionState(session, setAccounts, setActiveAccountId);
+      await loadProviders();
+    } catch (err: any) {
+      const errorMessage =
+        err?.detail || err?.message || "Failed to verify linked provider";
+      setError(errorMessage);
+      throw err;
+    }
+  };
+
+  const resendOAuthLink = async (
+    email: string,
+  ): Promise<RegistrationChallengeResponse> => {
+    setError(null);
+    try {
+      return await apiClient.resendOAuthLink(email);
+    } catch (err: any) {
+      const errorMessage =
+        err?.detail || err?.message || "Failed to resend code";
+      setError(errorMessage);
+      throw err;
+    }
+  };
 
   const beginOAuthLogin = (
     provider: string,
@@ -158,7 +268,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const session = await apiClient.switchAccount(accountId);
       applySessionState(session, setAccounts, setActiveAccountId);
     } catch (err: any) {
-      const errorMessage = err?.detail || err?.message || "Failed to switch account";
+      const errorMessage =
+        err?.detail || err?.message || "Failed to switch account";
       setError(errorMessage);
       throw err;
     }
@@ -170,10 +281,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const session = await apiClient.removeAccount(accountId);
       applySessionState(session, setAccounts, setActiveAccountId);
     } catch (err: any) {
-      const errorMessage = err?.detail || err?.message || "Failed to remove account";
+      const errorMessage =
+        err?.detail || err?.message || "Failed to remove account";
       setError(errorMessage);
       throw err;
     }
+  };
+
+  const logoutAccount = async (accountId: string) => {
+    await removeAccount(accountId);
+  };
+
+  const logoutCurrentAccount = async () => {
+    if (!activeAccountId) {
+      const missingAccountError = new Error("No active account selected");
+      setError(missingAccountError.message);
+      throw missingAccountError;
+    }
+
+    await removeAccount(activeAccountId);
   };
 
   const logoutAll = async () => {
@@ -191,7 +317,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async (accountId?: string) => {
     if (accountId) {
-      await removeAccount(accountId);
+      await logoutAccount(accountId);
       return;
     }
     await logoutAll();
@@ -211,9 +337,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     hasValidActiveAccount: !!activeAccount?.isValid,
     isLoading,
     error,
+    login,
+    register,
+    verifyEmail,
+    resendOtp,
+    verifyOAuthLink,
+    resendOAuthLink,
     beginOAuthLogin,
     switchAccount,
     removeAccount,
+    logoutAccount,
+    logoutCurrentAccount,
     logout,
     logoutAll,
     refreshSession,

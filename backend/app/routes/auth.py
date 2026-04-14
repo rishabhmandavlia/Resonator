@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, EmailStr, field_serializer
+from pydantic import BaseModel, EmailStr, Field, field_serializer
 from sqlalchemy.orm import Session
 
-from app.middleware.auth import create_access_token, get_current_user
+from app.middleware.auth import get_current_user
+from app.services.email_auth_service import EmailAuthService
 from app.services.oauth_service import OAuthService
 from database.database import get_db
 from database.models import SessionAccount, User
@@ -19,15 +19,6 @@ from database.models import SessionAccount, User
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def hash_password(password: str) -> str:
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
-
-
-def verify_password(plain_password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
 class UserRegister(BaseModel):
@@ -38,11 +29,6 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
 
 
 class ProviderResponse(BaseModel):
@@ -56,17 +42,23 @@ class ProviderListResponse(BaseModel):
     providers: list[ProviderResponse]
 
 
+class LinkedProviderResponse(BaseModel):
+    type: str
+    label: str
+    isInSession: bool
+    isValid: bool
+    expiresAt: int | None = None
+
+
 class SessionAccountResponse(BaseModel):
     accountId: str
     userId: str
-    provider: str
-    providerLabel: str
     email: str | None = None
     displayName: str | None = None
     avatarUrl: str | None = None
-    expiresAt: int | None = None
     isValid: bool
     invalidReason: str | None = None
+    providers: list[LinkedProviderResponse]
 
 
 class AuthSessionResponse(BaseModel):
@@ -76,6 +68,26 @@ class AuthSessionResponse(BaseModel):
 
 class SwitchAccountRequest(BaseModel):
     accountId: str
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+
+
+class ResendOtpRequest(BaseModel):
+    email: EmailStr
+
+
+class RegistrationChallengeResponse(BaseModel):
+    email: str
+    message: str
+    expiresAt: str
+    resendAvailableAt: str
+    resendCooldownSeconds: int
+    resendAvailableInSeconds: int
+    verificationType: str = "email_registration"
+    provider: str | None = None
 
 
 class UserResponse(BaseModel):
@@ -211,6 +223,153 @@ async def logout_all_accounts(
     return AuthSessionResponse(accounts=[], activeAccountId=None)
 
 
+@router.post("/register", response_model=RegistrationChallengeResponse)
+async def register_email_account(
+    payload: UserRegister,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RegistrationChallengeResponse:
+    try:
+        challenge = EmailAuthService.start_registration(
+            db,
+            request,
+            payload.email,
+            payload.password,
+        )
+        return RegistrationChallengeResponse(**challenge)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to start OTP registration for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start registration",
+        ) from exc
+
+
+@router.post("/verify-email", response_model=AuthSessionResponse)
+async def verify_email_registration(
+    payload: VerifyEmailRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AuthSessionResponse:
+    try:
+        user = EmailAuthService.verify_registration_otp(
+            db,
+            request,
+            payload.email,
+            payload.otp,
+        )
+        session, _account = OAuthService.upsert_local_session_account(db, request, user)
+        db.commit()
+        db.refresh(session)
+        OAuthService.set_session_cookie(response, session)
+        return AuthSessionResponse(**OAuthService.serialize_session(session))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to verify email registration for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify email",
+        ) from exc
+
+
+@router.post("/resend-otp", response_model=RegistrationChallengeResponse)
+async def resend_registration_otp(
+    payload: ResendOtpRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RegistrationChallengeResponse:
+    try:
+        challenge = EmailAuthService.resend_otp(db, request, payload.email)
+        return RegistrationChallengeResponse(**challenge)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to resend OTP for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to resend verification code",
+        ) from exc
+
+
+@router.post("/verify-oauth-link", response_model=AuthSessionResponse)
+async def verify_oauth_link(
+    payload: VerifyEmailRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AuthSessionResponse:
+    try:
+        session, _account = OAuthService.verify_pending_oauth_link(
+            db,
+            request,
+            payload.email,
+            payload.otp,
+        )
+        OAuthService.set_session_cookie(response, session)
+        return AuthSessionResponse(**OAuthService.serialize_session(session))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to verify OAuth link for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify linked provider",
+        ) from exc
+
+
+@router.post("/resend-oauth-link", response_model=RegistrationChallengeResponse)
+async def resend_oauth_link_otp(
+    payload: ResendOtpRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RegistrationChallengeResponse:
+    try:
+        challenge = OAuthService.resend_pending_oauth_link(db, request, payload.email)
+        return RegistrationChallengeResponse(**challenge)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to resend OAuth link OTP for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to resend verification code",
+        ) from exc
+
+
+@router.post("/login", response_model=AuthSessionResponse)
+async def login_email_account(
+    payload: UserLogin,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AuthSessionResponse:
+    try:
+        user = EmailAuthService.authenticate_user(db, payload.email, payload.password)
+        session, _account = OAuthService.upsert_local_session_account(db, request, user)
+        db.commit()
+        db.refresh(session)
+        OAuthService.set_session_cookie(response, session)
+        return AuthSessionResponse(**OAuthService.serialize_session(session))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed email login for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to sign in",
+        ) from exc
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
     request: Request,
@@ -235,43 +394,3 @@ async def get_current_user_info(
         avatar_url=active_account.avatar_url if active_account else None,
         is_valid=active_account.is_valid if active_account else True,
     )
-
-
-@router.post("/register", response_model=TokenResponse)
-async def register_legacy(user_data: UserRegister, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User with this email already exists",
-        )
-
-    username = user_data.email.split("@")[0]
-    new_user = User(
-        email=user_data.email,
-        username=username,
-        password_hash=hash_password(user_data.password),
-        is_active=True,
-        is_admin=False,
-        is_verified=False,
-        created_at=datetime.utcnow(),
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    access_token = create_access_token(data={"sub": str(new_user.id)})
-    return TokenResponse(access_token=access_token)
-
-
-@router.post("/login", response_model=TokenResponse)
-async def login_legacy(user_data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == user_data.email).first()
-    if not user or not verify_password(user_data.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
-
-    access_token = create_access_token(data={"sub": str(user.id)})
-    return TokenResponse(access_token=access_token)

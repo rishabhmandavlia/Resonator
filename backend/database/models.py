@@ -19,6 +19,8 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     is_admin = Column(Boolean, nullable=False, default=False)
     is_verified = Column(Boolean, nullable=False, default=False)
+    is_email_verified = Column(Boolean, nullable=False, default=False, index=True)
+    has_email_auth = Column(Boolean, nullable=False, default=False, index=True)
     last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -28,6 +30,56 @@ class User(Base):
     generations = relationship("Generation", back_populates="user", cascade="all, delete-orphan")
     oauth_identities = relationship("OAuthIdentity", back_populates="user", cascade="all, delete-orphan")
     session_accounts = relationship("SessionAccount", back_populates="user")
+
+
+class PendingEmailVerification(Base):
+    """Temporary registration state pending email OTP verification."""
+    __tablename__ = "pending_email_verifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    otp_hash = Column(String(255), nullable=False)
+    otp_expires_at = Column(DateTime, nullable=False, index=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    resend_count = Column(Integer, nullable=False, default=0)
+    resend_available_at = Column(DateTime, nullable=False)
+    last_sent_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PendingOAuthLink(Base):
+    """Temporary OAuth login state waiting for OTP-based email verification."""
+    __tablename__ = "pending_oauth_links"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_subject", name="uq_pending_oauth_link_provider_subject"),
+        UniqueConstraint("email", name="uq_pending_oauth_link_email"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, index=True)
+    provider_subject = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=False, index=True)
+    display_name = Column(String(255), nullable=True)
+    avatar_url = Column(String(500), nullable=True)
+    access_token_encrypted = Column(Text, nullable=False)
+    refresh_token_encrypted = Column(Text, nullable=True)
+    id_token_encrypted = Column(Text, nullable=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    token_type = Column(String(50), nullable=False, default="Bearer")
+    scopes_json = Column(Text, nullable=True)
+    otp_hash = Column(String(255), nullable=False)
+    otp_expires_at = Column(DateTime, nullable=False, index=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    resend_count = Column(Integer, nullable=False, default=0)
+    resend_available_at = Column(DateTime, nullable=False)
+    last_sent_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    session = relationship("AuthSession", back_populates="pending_oauth_links")
 
 
 class AuthSession(Base):
@@ -54,6 +106,11 @@ class AuthSession(Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    pending_oauth_links = relationship(
+        "PendingOAuthLink",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
 
 class OAuthIdentity(Base):
@@ -61,6 +118,7 @@ class OAuthIdentity(Base):
     __tablename__ = "oauth_identities"
     __table_args__ = (
         UniqueConstraint("provider", "provider_subject", name="uq_oauth_identity_provider_subject"),
+        UniqueConstraint("user_id", "provider", name="uq_oauth_identity_user_provider"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -68,6 +126,7 @@ class OAuthIdentity(Base):
     provider = Column(String(50), nullable=False, index=True)
     provider_subject = Column(String(255), nullable=False, index=True)
     email = Column(String(255), nullable=True, index=True)
+    email_verified = Column(Boolean, nullable=False, default=False, index=True)
     display_name = Column(String(255), nullable=True)
     avatar_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)

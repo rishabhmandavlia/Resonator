@@ -82,14 +82,20 @@ export interface AuthProviderOption {
 export interface SessionAccountSummary {
   accountId: string;
   userId: string;
-  provider: string;
-  providerLabel: string;
   email: string | null;
   displayName: string | null;
   avatarUrl: string | null;
-  expiresAt: number | null;
   isValid: boolean;
   invalidReason: string | null;
+  providers: ConnectedProviderSummary[];
+}
+
+export interface ConnectedProviderSummary {
+  type: string;
+  label: string;
+  isInSession: boolean;
+  isValid: boolean;
+  expiresAt: number | null;
 }
 
 export interface AuthSessionResponse {
@@ -99,6 +105,28 @@ export interface AuthSessionResponse {
 
 export interface AuthProvidersResponse {
   providers: AuthProviderOption[];
+}
+
+export interface RegistrationChallengeResponse {
+  email: string;
+  message: string;
+  expiresAt: string;
+  resendAvailableAt: string;
+  resendCooldownSeconds: number;
+  resendAvailableInSeconds: number;
+  verificationType: string;
+  provider: string | null;
+}
+
+export interface CurrentUserResponse {
+  id: string;
+  email: string;
+  created_at: string;
+  provider: string | null;
+  account_id: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  is_valid: boolean;
 }
 
 type RawFilteredGenerationsResponse = {
@@ -297,26 +325,69 @@ class ApiClient {
   }
 
   /**
-   * Register a new user
+   * Start email registration and send OTP
    */
   async register(
     email: string,
     password: string,
-  ): Promise<{ access_token: string; token_type: string }> {
-    return this.request("/api/auth/register", {
+  ): Promise<RegistrationChallengeResponse> {
+    return this.request<RegistrationChallengeResponse>("/api/auth/register", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
   }
 
   /**
-   * Login user
+   * Verify email registration OTP and attach the account to the current session
    */
-  async login(
+  async verifyEmail(email: string, otp: string): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ email, otp }),
+    });
+  }
+
+  /**
+   * Resend the registration OTP
+   */
+  async resendOtp(email: string): Promise<RegistrationChallengeResponse> {
+    return this.request<RegistrationChallengeResponse>("/api/auth/resend-otp", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  /**
+   * Verify a pending OAuth email-link OTP and attach the provider to the current user session
+   */
+  async verifyOAuthLink(
     email: string,
-    password: string,
-  ): Promise<{ access_token: string; token_type: string }> {
-    return this.request("/api/auth/login", {
+    otp: string,
+  ): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/verify-oauth-link", {
+      method: "POST",
+      body: JSON.stringify({ email, otp }),
+    });
+  }
+
+  /**
+   * Resend the OTP for a pending OAuth email-link flow
+   */
+  async resendOAuthLink(email: string): Promise<RegistrationChallengeResponse> {
+    return this.request<RegistrationChallengeResponse>(
+      "/api/auth/resend-oauth-link",
+      {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      },
+    );
+  }
+
+  /**
+   * Login user and add the verified email account to the current session
+   */
+  async login(email: string, password: string): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
@@ -325,8 +396,8 @@ class ApiClient {
   /**
    * Get current user
    */
-  async getCurrentUser(): Promise<{ id: string; email: string }> {
-    return this.request("/api/auth/me", {
+  async getCurrentUser(): Promise<CurrentUserResponse> {
+    return this.request<CurrentUserResponse>("/api/auth/me", {
       method: "GET",
     });
   }

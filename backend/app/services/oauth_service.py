@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections import defaultdict
 import hashlib
 import json
 import logging
@@ -22,10 +23,13 @@ from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.services.email_auth_service import EmailAuthService
+from app.services.email_delivery_service import EmailDeliveryService
 from database.models import (
     AuthSession,
     OAuthAuthorizationState,
     OAuthIdentity,
+    PendingOAuthLink,
     SessionAccount,
     User,
 )
@@ -123,6 +127,9 @@ PROVIDER_DEFINITIONS: dict[str, OAuthProviderDefinition] = {
     ),
 }
 
+LOCAL_EMAIL_PROVIDER = "email"
+LOCAL_EMAIL_PROVIDER_LABEL = "Email"
+
 _provider_metadata_cache: dict[str, dict[str, Any]] = {}
 
 
@@ -167,6 +174,46 @@ class OAuthService:
             }
             for provider in PROVIDER_DEFINITIONS.values()
         ]
+
+    @staticmethod
+    def get_provider_label(provider_name: str) -> str:
+        if provider_name == LOCAL_EMAIL_PROVIDER:
+            return LOCAL_EMAIL_PROVIDER_LABEL
+        provider = PROVIDER_DEFINITIONS.get(provider_name)
+        if provider is not None:
+            return provider.display_name
+        return provider_name.title()
+
+    @staticmethod
+    def normalize_email(email: str | None) -> str | None:
+        if not email:
+            return None
+        return email.strip().lower()
+
+    @staticmethod
+    def build_user_display_name(email: str | None, display_name: str | None) -> str:
+        if display_name:
+            return display_name[:255]
+        if email:
+            return email.split("@")[0][:255]
+        return "User"
+
+    @staticmethod
+    def is_profile_email_trusted(
+        provider: OAuthProviderDefinition,
+        profile: dict[str, Any],
+    ) -> bool:
+        email = OAuthService.normalize_email(profile.get("email"))
+        if not email:
+            return False
+
+        if provider.provider == "google":
+            return bool(profile.get("email_verified", True))
+
+        if provider.provider == "github":
+            return bool(profile.get("email_verified"))
+
+        return bool(profile.get("email_verified"))
 
     @staticmethod
     async def get_provider_metadata(provider: OAuthProviderDefinition) -> dict[str, Any]:
@@ -440,26 +487,40 @@ class OAuthService:
                 user_data = user_response.json()
 
                 email = user_data.get("email")
+                email_verified = False
                 if not email and provider.email_url:
                     email_response = await client.get(provider.email_url, headers=headers)
                     email_response.raise_for_status()
                     emails = email_response.json()
-                    primary_email = next(
+                    selected_email = next(
                         (
-                            item.get("email")
+                            item
                             for item in emails
                             if item.get("primary") and item.get("verified")
                         ),
                         None,
                     )
-                    email = primary_email or next(
-                        (item.get("email") for item in emails if item.get("verified")),
-                        None,
-                    )
+                    if selected_email is None:
+                        selected_email = next(
+                            (item for item in emails if item.get("verified")),
+                            None,
+                        )
+                    if selected_email is None:
+                        selected_email = next(
+                            (item for item in emails if item.get("primary")),
+                            None,
+                        )
+                    if selected_email is None and emails:
+                        selected_email = emails[0]
+
+                    if selected_email is not None:
+                        email = selected_email.get("email")
+                        email_verified = bool(selected_email.get("verified"))
 
             return {
                 "subject": str(user_data.get("id") or user_data.get("node_id")),
                 "email": email,
+                "email_verified": email_verified,
                 "display_name": user_data.get("name") or user_data.get("login"),
                 "avatar_url": user_data.get("avatar_url"),
             }
@@ -480,6 +541,7 @@ class OAuthService:
         return {
             "subject": str(profile.get("sub") or profile.get("id")),
             "email": profile.get("email"),
+            "email_verified": bool(profile.get("email_verified", profile.get("email"))),
             "display_name": profile.get("name") or profile.get("preferred_username"),
             "avatar_url": profile.get("picture"),
         }
@@ -490,11 +552,11 @@ class OAuthService:
         return bcrypt.hashpw(uuid.uuid4().hex.encode("utf-8"), salt).decode("utf-8")
 
     @staticmethod
-    def find_or_create_user(
+    def get_identity_by_subject(
         db: Session,
         provider: OAuthProviderDefinition,
         profile: dict[str, Any],
-    ) -> tuple[User, OAuthIdentity]:
+    ) -> OAuthIdentity | None:
         subject = profile.get("subject")
         if not subject:
             raise HTTPException(
@@ -502,7 +564,7 @@ class OAuthService:
                 detail=f"{provider.display_name} did not return a stable user identifier",
             )
 
-        identity = (
+        return (
             db.query(OAuthIdentity)
             .filter(
                 OAuthIdentity.provider == provider.provider,
@@ -511,37 +573,88 @@ class OAuthService:
             .first()
         )
 
-        user = identity.user if identity else None
-        email = (profile.get("email") or "").strip() or None
+    @staticmethod
+    def link_verified_identity(
+        db: Session,
+        provider: OAuthProviderDefinition,
+        profile: dict[str, Any],
+    ) -> tuple[User, OAuthIdentity]:
+        subject = profile.get("subject")
+        normalized_email = OAuthService.normalize_email(profile.get("email"))
+        if not subject or not normalized_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{provider.display_name} did not return a verified email address",
+            )
 
-        if user is None and email:
+        identity = OAuthService.get_identity_by_subject(db, provider, profile)
+        user = identity.user if identity else None
+
+        if user is None:
             user = (
                 db.query(User)
-                .filter(func.lower(User.email) == email.lower())
+                .filter(func.lower(User.email) == normalized_email)
                 .first()
             )
 
         if user is None:
-            fallback_email = email or f"{provider.provider}-{subject}@oauth.local"
-            display_name = profile.get("display_name") or fallback_email.split("@")[0]
             user = User(
-                email=fallback_email,
-                username=(display_name or fallback_email.split("@")[0])[:255],
+                email=normalized_email,
+                username=OAuthService.build_user_display_name(
+                    normalized_email,
+                    profile.get("display_name"),
+                ),
                 password_hash=OAuthService.build_password_placeholder(),
                 is_active=True,
                 is_admin=False,
-                is_verified=bool(email),
+                is_verified=True,
+                is_email_verified=True,
+                has_email_auth=False,
                 created_at=_utcnow(),
+                updated_at=_utcnow(),
+                last_login=_utcnow(),
             )
             db.add(user)
             db.flush()
+        else:
+            existing_provider_identity = (
+                db.query(OAuthIdentity)
+                .filter(
+                    OAuthIdentity.user_id == user.id,
+                    OAuthIdentity.provider == provider.provider,
+                )
+                .first()
+            )
+            if (
+                existing_provider_identity is not None
+                and existing_provider_identity.provider_subject != subject
+                and (identity is None or existing_provider_identity.id != identity.id)
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"A different {provider.display_name} account is already linked to this email."
+                    ),
+                )
+
+            user.email = normalized_email
+            user.username = user.username or OAuthService.build_user_display_name(
+                normalized_email,
+                profile.get("display_name"),
+            )
+            user.is_active = True
+            user.is_verified = True
+            user.is_email_verified = True
+            user.updated_at = _utcnow()
+            user.last_login = _utcnow()
 
         if identity is None:
             identity = OAuthIdentity(
                 user_id=user.id,
                 provider=provider.provider,
                 provider_subject=subject,
-                email=email,
+                email=normalized_email,
+                email_verified=True,
                 display_name=profile.get("display_name"),
                 avatar_url=profile.get("avatar_url"),
                 created_at=_utcnow(),
@@ -551,7 +664,8 @@ class OAuthService:
             db.add(identity)
         else:
             identity.user_id = user.id
-            identity.email = email
+            identity.email = normalized_email
+            identity.email_verified = True
             identity.display_name = profile.get("display_name")
             identity.avatar_url = profile.get("avatar_url")
             identity.updated_at = _utcnow()
@@ -559,6 +673,261 @@ class OAuthService:
 
         db.flush()
         return user, identity
+
+    @staticmethod
+    def start_pending_oauth_link(
+        db: Session,
+        request: Request,
+        provider: OAuthProviderDefinition,
+        profile: dict[str, Any],
+        token_payload: dict[str, Any],
+        session: AuthSession,
+    ) -> dict[str, Any]:
+        subject = profile.get("subject")
+        normalized_email = OAuthService.normalize_email(profile.get("email"))
+        if not subject or not normalized_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{provider.display_name} account must expose an email address to continue",
+            )
+
+        EmailAuthService.enforce_rate_limit("register", normalized_email, request)
+        now = _utcnow()
+        pending = (
+            db.query(PendingOAuthLink)
+            .filter(func.lower(PendingOAuthLink.email) == normalized_email)
+            .first()
+        )
+
+        if pending and pending.resend_available_at > now:
+            retry_after = int((pending.resend_available_at - now).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {retry_after} seconds before requesting another OTP.",
+            )
+
+        otp_code = EmailAuthService.generate_otp()
+        if pending is None:
+            pending = PendingOAuthLink(
+                session_id=session.id,
+                provider=provider.provider,
+                provider_subject=subject,
+                email=normalized_email,
+                created_at=now,
+            )
+            db.add(pending)
+
+        pending.session_id = session.id
+        pending.provider = provider.provider
+        pending.provider_subject = subject
+        pending.email = normalized_email
+        pending.display_name = profile.get("display_name")
+        pending.avatar_url = profile.get("avatar_url")
+        pending.access_token_encrypted = OAuthService.encrypt_token(token_payload.get("access_token")) or ""
+        pending.refresh_token_encrypted = OAuthService.encrypt_token(token_payload.get("refresh_token"))
+        pending.id_token_encrypted = OAuthService.encrypt_token(token_payload.get("id_token"))
+        pending.expires_at = OAuthService.normalize_expires_at(token_payload)
+        pending.token_type = token_payload.get("token_type", "Bearer")
+        pending.scopes_json = OAuthService.normalize_scope(token_payload.get("scope"), provider)
+        pending.otp_hash = EmailAuthService.hash_otp(otp_code)
+        pending.otp_expires_at = now + timedelta(minutes=5)
+        pending.failed_attempts = 0
+        pending.resend_count = (pending.resend_count or 0) + 1
+        pending.resend_available_at = now + timedelta(seconds=30)
+        pending.last_sent_at = now
+        pending.updated_at = now
+        db.flush()
+
+        try:
+            EmailDeliveryService.send_registration_otp(
+                recipient_email=normalized_email,
+                otp_code=otp_code,
+                expires_in_minutes=5,
+            )
+            db.commit()
+        except Exception as exc:
+            logger.exception(
+                "Failed to deliver OAuth link verification OTP to %s",
+                normalized_email,
+            )
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            ) from exc
+
+        return EmailAuthService.build_response(
+            pending,
+            f"Verify your email to link {provider.display_name} to Resonator - AI Voice Generator.",
+            verification_type="oauth_link",
+            provider=provider.provider,
+        )
+
+    @staticmethod
+    def resend_pending_oauth_link(
+        db: Session,
+        request: Request,
+        email: str,
+    ) -> dict[str, Any]:
+        normalized_email = OAuthService.normalize_email(email)
+        if not normalized_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is required",
+            )
+
+        EmailAuthService.enforce_rate_limit("oauth_link_resend", normalized_email, request)
+        pending = (
+            db.query(PendingOAuthLink)
+            .filter(func.lower(PendingOAuthLink.email) == normalized_email)
+            .first()
+        )
+        if pending is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No pending OAuth email verification found for this email",
+            )
+
+        now = _utcnow()
+        if pending.resend_available_at > now:
+            retry_after = int((pending.resend_available_at - now).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {retry_after} seconds before resending the OTP.",
+            )
+
+        otp_code = EmailAuthService.generate_otp()
+        pending.otp_hash = EmailAuthService.hash_otp(otp_code)
+        pending.otp_expires_at = now + timedelta(minutes=5)
+        pending.failed_attempts = 0
+        pending.resend_count = (pending.resend_count or 0) + 1
+        pending.resend_available_at = now + timedelta(seconds=30)
+        pending.last_sent_at = now
+        pending.updated_at = now
+        db.flush()
+
+        try:
+            EmailDeliveryService.send_registration_otp(
+                recipient_email=normalized_email,
+                otp_code=otp_code,
+                expires_in_minutes=5,
+            )
+            db.commit()
+        except Exception as exc:
+            logger.exception(
+                "Failed to resend OAuth link verification OTP to %s",
+                normalized_email,
+            )
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            ) from exc
+
+        return EmailAuthService.build_response(
+            pending,
+            f"Verify your email to link {OAuthService.get_provider_label(pending.provider)} to Resonator - AI Voice Generator.",
+            verification_type="oauth_link",
+            provider=pending.provider,
+        )
+
+    @staticmethod
+    def verify_pending_oauth_link(
+        db: Session,
+        request: Request,
+        email: str,
+        otp_code: str,
+    ) -> tuple[AuthSession, SessionAccount]:
+        normalized_email = OAuthService.normalize_email(email)
+        if not normalized_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is required",
+            )
+
+        EmailAuthService.enforce_rate_limit("oauth_link_verify", normalized_email, request)
+        pending = (
+            db.query(PendingOAuthLink)
+            .filter(func.lower(PendingOAuthLink.email) == normalized_email)
+            .first()
+        )
+        if pending is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No pending OAuth email verification found for this email",
+            )
+
+        now = _utcnow()
+        if pending.otp_expires_at < now:
+            db.delete(pending)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OTP expired. Request a new verification code.",
+            )
+
+        if pending.failed_attempts >= 5:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Maximum OTP attempts exceeded. Request a new verification code.",
+            )
+
+        if not EmailAuthService.verify_otp(otp_code, pending.otp_hash):
+            pending.failed_attempts += 1
+            pending.updated_at = now
+            db.commit()
+            remaining_attempts = max(0, 5 - pending.failed_attempts)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Invalid OTP. "
+                    + (
+                        f"{remaining_attempts} attempt(s) remaining."
+                        if remaining_attempts > 0
+                        else "Request a new verification code."
+                    )
+                ),
+            )
+
+        provider = OAuthService.get_provider(pending.provider)
+        profile = {
+            "subject": pending.provider_subject,
+            "email": pending.email,
+            "email_verified": True,
+            "display_name": pending.display_name,
+            "avatar_url": pending.avatar_url,
+        }
+        token_payload = {
+            "access_token": OAuthService.decrypt_token(pending.access_token_encrypted),
+            "refresh_token": OAuthService.decrypt_token(pending.refresh_token_encrypted),
+            "id_token": OAuthService.decrypt_token(pending.id_token_encrypted),
+            "token_type": pending.token_type,
+            "scope": json.loads(pending.scopes_json) if pending.scopes_json else list(provider.scopes),
+            "expires_at": int(pending.expires_at.timestamp()) if pending.expires_at else None,
+        }
+        user, identity = OAuthService.link_verified_identity(db, provider, profile)
+
+        session = db.query(AuthSession).filter(AuthSession.id == pending.session_id).first()
+        if session is None:
+            session = OAuthService.get_or_create_session(request, db)
+
+        account = OAuthService.upsert_session_account(
+            db,
+            session,
+            user,
+            identity,
+            provider,
+            profile,
+            token_payload,
+        )
+
+        session.active_account_id = account.id
+        session.updated_at = _utcnow()
+        session.last_seen_at = _utcnow()
+        db.delete(pending)
+        db.commit()
+        db.refresh(session)
+        return session, account
 
     @staticmethod
     def upsert_session_account(
@@ -613,24 +982,134 @@ class OAuthService:
         return existing_account
 
     @staticmethod
-    def serialize_account(account: SessionAccount) -> dict[str, Any]:
+    def upsert_local_session_account(
+        db: Session,
+        request: Request,
+        user: User,
+    ) -> tuple[AuthSession, SessionAccount]:
+        session = OAuthService.get_or_create_session(request, db)
+        provider_subject = (user.email or str(user.id)).strip().lower()
+
+        existing_account = (
+            db.query(SessionAccount)
+            .filter(
+                SessionAccount.session_id == session.id,
+                SessionAccount.provider == LOCAL_EMAIL_PROVIDER,
+                SessionAccount.provider_subject == provider_subject,
+            )
+            .first()
+        )
+
+        if existing_account is None:
+            existing_account = SessionAccount(
+                session_id=session.id,
+                user_id=user.id,
+                provider=LOCAL_EMAIL_PROVIDER,
+                provider_subject=provider_subject,
+                created_at=_utcnow(),
+            )
+            db.add(existing_account)
+
+        existing_account.user_id = user.id
+        existing_account.identity_id = None
+        existing_account.email = user.email
+        existing_account.display_name = user.username
+        existing_account.avatar_url = None
+        existing_account.access_token_encrypted = (
+            OAuthService.encrypt_token(secrets.token_urlsafe(48)) or ""
+        )
+        existing_account.refresh_token_encrypted = None
+        existing_account.id_token_encrypted = None
+        existing_account.expires_at = None
+        existing_account.token_type = "Session"
+        existing_account.scopes_json = json.dumps(["local_auth"])
+        existing_account.is_valid = True
+        existing_account.invalid_reason = None
+        existing_account.updated_at = _utcnow()
+        existing_account.last_used_at = _utcnow()
+        db.flush()
+
+        session.active_account_id = existing_account.id
+        session.updated_at = _utcnow()
+        session.last_seen_at = _utcnow()
+        db.flush()
+        return session, existing_account
+
+    @staticmethod
+    def serialize_linked_provider(
+        provider_type: str,
+        session_account: SessionAccount | None,
+    ) -> dict[str, Any]:
         return {
-            "accountId": str(account.id),
-            "userId": str(account.user_id),
-            "provider": account.provider,
-            "providerLabel": PROVIDER_DEFINITIONS.get(account.provider, OAuthProviderDefinition(
-                provider=account.provider,
-                display_name=account.provider.title(),
-                client_id_env="",
-                client_secret_env="",
-                scopes=(),
-            )).display_name,
-            "email": account.email,
-            "displayName": account.display_name,
-            "avatarUrl": account.avatar_url,
-            "expiresAt": int(account.expires_at.timestamp()) if account.expires_at else None,
-            "isValid": account.is_valid,
-            "invalidReason": account.invalid_reason,
+            "type": provider_type,
+            "label": OAuthService.get_provider_label(provider_type),
+            "isInSession": session_account is not None,
+            "isValid": session_account.is_valid if session_account is not None else True,
+            "expiresAt": (
+                int(session_account.expires_at.timestamp())
+                if session_account is not None and session_account.expires_at
+                else None
+            ),
+        }
+
+    @staticmethod
+    def serialize_session_user(
+        user: User,
+        session_accounts: list[SessionAccount],
+    ) -> dict[str, Any]:
+        session_accounts_by_provider = {
+            account.provider: account
+            for account in session_accounts
+        }
+        linked_provider_types = {
+            identity.provider
+            for identity in user.oauth_identities
+        }
+        if user.has_email_auth:
+            linked_provider_types.add(LOCAL_EMAIL_PROVIDER)
+        linked_provider_types.update(session_accounts_by_provider.keys())
+
+        provider_order = [LOCAL_EMAIL_PROVIDER, "google", "github"]
+        ordered_provider_types = sorted(
+            linked_provider_types,
+            key=lambda provider_name: (
+                provider_order.index(provider_name)
+                if provider_name in provider_order
+                else len(provider_order),
+                provider_name,
+            ),
+        )
+
+        display_name = next(
+            (account.display_name for account in session_accounts if account.display_name),
+            user.username,
+        )
+        avatar_url = next(
+            (account.avatar_url for account in session_accounts if account.avatar_url),
+            None,
+        )
+        has_valid_session_provider = any(account.is_valid for account in session_accounts)
+        invalid_reasons = [
+            account.invalid_reason
+            for account in session_accounts
+            if account.invalid_reason
+        ]
+
+        return {
+            "accountId": str(user.id),
+            "userId": str(user.id),
+            "email": user.email,
+            "displayName": display_name,
+            "avatarUrl": avatar_url,
+            "isValid": has_valid_session_provider,
+            "invalidReason": None if has_valid_session_provider else (invalid_reasons[0] if invalid_reasons else None),
+            "providers": [
+                OAuthService.serialize_linked_provider(
+                    provider_type,
+                    session_accounts_by_provider.get(provider_type),
+                )
+                for provider_type in ordered_provider_types
+            ],
         }
 
     @staticmethod
@@ -641,16 +1120,38 @@ class OAuthService:
                 "activeAccountId": None,
             }
 
-        ordered_accounts = sorted(
-            session.accounts,
-            key=lambda account: (
-                account.id != session.active_account_id,
-                -(account.updated_at.timestamp() if account.updated_at else 0),
+        grouped_accounts: dict[str, list[SessionAccount]] = defaultdict(list)
+        for account in session.accounts:
+            grouped_accounts[str(account.user_id)].append(account)
+
+        active_user_id = None
+        if session.active_account_id:
+            active_account = next(
+                (account for account in session.accounts if account.id == session.active_account_id),
+                None,
+            )
+            if active_account is not None:
+                active_user_id = str(active_account.user_id)
+
+        ordered_users = sorted(
+            grouped_accounts.items(),
+            key=lambda item: (
+                item[0] != active_user_id,
+                -max(
+                    (account.updated_at.timestamp() if account.updated_at else 0)
+                    for account in item[1]
+                ),
             ),
         )
+
+        serialized_accounts = [
+            OAuthService.serialize_session_user(accounts[0].user, accounts)
+            for _user_id, accounts in ordered_users
+        ]
+
         return {
-            "accounts": [OAuthService.serialize_account(account) for account in ordered_accounts],
-            "activeAccountId": str(session.active_account_id) if session.active_account_id else None,
+            "accounts": serialized_accounts,
+            "activeAccountId": active_user_id,
         }
 
     @staticmethod
@@ -687,7 +1188,53 @@ class OAuthService:
             auth_state.code_verifier,
         )
         profile = await OAuthService.fetch_user_profile(provider, token_payload)
-        user, identity = OAuthService.find_or_create_user(db, provider, profile)
+        existing_identity = OAuthService.get_identity_by_subject(db, provider, profile)
+        if existing_identity is None and not OAuthService.is_profile_email_trusted(provider, profile):
+            db.delete(auth_state)
+            challenge = OAuthService.start_pending_oauth_link(
+                db,
+                request,
+                provider,
+                profile,
+                token_payload,
+                session,
+            )
+
+            redirect = RedirectResponse(
+                url=OAuthService.build_frontend_url(
+                    "/register",
+                    {
+                        "mode": "oauth-link",
+                        "provider": provider.provider,
+                        "email": challenge["email"],
+                        "message": str(challenge["message"]),
+                        "expiresAt": str(challenge["expiresAt"]),
+                        "resendAvailableAt": str(challenge["resendAvailableAt"]),
+                    },
+                ),
+                status_code=status.HTTP_302_FOUND,
+            )
+            OAuthService.set_session_cookie(redirect, session)
+            return redirect
+
+        if existing_identity is not None:
+            user = existing_identity.user
+            normalized_email = OAuthService.normalize_email(profile.get("email"))
+            if normalized_email:
+                user.email = normalized_email
+                existing_identity.email = normalized_email
+            user.is_active = True
+            user.updated_at = _utcnow()
+            user.last_login = _utcnow()
+            existing_identity.email_verified = existing_identity.email_verified or bool(profile.get("email_verified"))
+            existing_identity.display_name = profile.get("display_name") or existing_identity.display_name
+            existing_identity.avatar_url = profile.get("avatar_url") or existing_identity.avatar_url
+            existing_identity.updated_at = _utcnow()
+            existing_identity.last_login_at = _utcnow()
+            identity = existing_identity
+        else:
+            user, identity = OAuthService.link_verified_identity(db, provider, profile)
+
         account = OAuthService.upsert_session_account(
             db,
             session,
@@ -842,18 +1389,24 @@ class OAuthService:
         account = (
             db.query(SessionAccount)
             .filter(
-                SessionAccount.id == account_uuid,
+                SessionAccount.user_id == account_uuid,
                 SessionAccount.session_id == session.id,
             )
-            .first()
+            .order_by(SessionAccount.updated_at.desc())
+            .all()
         )
-        if account is None:
+        if not account:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Account not found in current session",
+                detail="User not found in current session",
             )
 
-        session.active_account_id = account.id
+        preferred_account = next(
+            (item for item in account if item.is_valid),
+            account[0],
+        )
+
+        session.active_account_id = preferred_account.id
         session.updated_at = _utcnow()
         db.commit()
         db.refresh(session)
@@ -876,36 +1429,55 @@ class OAuthService:
                 detail="Invalid account ID",
             ) from exc
 
-        account = (
+        session_accounts = (
             db.query(SessionAccount)
             .filter(
-                SessionAccount.id == account_uuid,
+                SessionAccount.user_id == account_uuid,
                 SessionAccount.session_id == session.id,
             )
-            .first()
-        )
-        if account is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Account not found in current session",
-            )
-
-        was_active = session.active_account_id == account.id
-        db.delete(account)
-        db.flush()
-
-        remaining_accounts = (
-            db.query(SessionAccount)
-            .filter(SessionAccount.session_id == session.id)
             .order_by(SessionAccount.updated_at.desc())
             .all()
         )
+        if not session_accounts:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found in current session",
+            )
+
+        account_ids_to_remove = {item.id for item in session_accounts}
+        previous_active_account_id = session.active_account_id
+        was_active = previous_active_account_id in account_ids_to_remove
+
+        remaining_accounts = (
+            db.query(SessionAccount)
+            .filter(
+                SessionAccount.session_id == session.id,
+                SessionAccount.user_id != account_uuid,
+            )
+            .order_by(SessionAccount.updated_at.desc())
+            .all()
+        )
+
+        for account in session_accounts:
+            db.delete(account)
+
         if not remaining_accounts:
             db.delete(session)
             db.commit()
             return OAuthService.serialize_session(None), True
 
-        if was_active:
+        if not was_active and previous_active_account_id is not None:
+            active_account_still_present = next(
+                (item for item in remaining_accounts if item.id == previous_active_account_id),
+                None,
+            )
+            session.active_account_id = (
+                active_account_still_present.id if active_account_still_present else None
+            )
+        else:
+            session.active_account_id = None
+
+        if session.active_account_id is None:
             preferred_account = next(
                 (item for item in remaining_accounts if item.is_valid),
                 remaining_accounts[0],

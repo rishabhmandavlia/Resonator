@@ -1,140 +1,330 @@
-/**
- * Login Page Component
- * Entry point for OAuth-based multi-account sign-in.
- */
-
-import { ArrowLeftRight, ShieldCheck, UserPlus } from "lucide-react";
+import { Eye, EyeOff, Github, KeyRound, Mail } from "lucide-react";
+import { FormEvent, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
+import resonatorLogo from "../assets/resonator-logo.svg";
+import resonatorWordmark from "../assets/resonator-wordmark.svg";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import { useAuth } from "../services/auth";
+
+function GoogleIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className={className}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M21.6 12.23c0-.68-.06-1.34-.18-1.96H12v3.7h5.39a4.6 4.6 0 0 1-1.99 3.02v2.5h3.22c1.89-1.74 2.98-4.3 2.98-7.26Z"
+        fill="#4285F4"
+      />
+      <path
+        d="M12 22c2.7 0 4.96-.9 6.62-2.43l-3.22-2.5c-.9.6-2.04.96-3.4.96-2.62 0-4.84-1.77-5.63-4.14H3.04v2.58A9.99 9.99 0 0 0 12 22Z"
+        fill="#34A853"
+      />
+      <path
+        d="M6.37 13.9A6.02 6.02 0 0 1 6.05 12c0-.66.11-1.31.32-1.9V7.52H3.04A10 10 0 0 0 2 12c0 1.61.38 3.13 1.04 4.48l3.33-2.58Z"
+        fill="#FBBC05"
+      />
+      <path
+        d="M12 5.97c1.47 0 2.8.5 3.84 1.48l2.88-2.88C16.95 2.9 14.7 2 12 2 8.09 2 4.72 4.24 3.04 7.52l3.33 2.58C7.16 7.73 9.38 5.97 12 5.97Z"
+        fill="#EA4335"
+      />
+    </svg>
+  );
+}
+
+function getProviderIcon(providerId: string) {
+  switch (providerId) {
+    case "github":
+      return Github;
+    case "google":
+      return GoogleIcon;
+    default:
+      return KeyRound;
+  }
+}
 
 export function Login() {
   const [searchParams] = useSearchParams();
-  const { beginOAuthLogin, providers, error, isLoading } = useAuth();
+  const { beginOAuthLogin, clearError, error, isLoading, login, providers } =
+    useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const configuredProviders = providers.filter(
-    (provider) => provider.isConfigured,
+  const configuredProviders = useMemo(
+    () => providers.filter((provider) => provider.isConfigured),
+    [providers],
   );
-  const displayError = searchParams.get("authError") || error;
+  const displayError = searchParams.get("authError") || formError || error;
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFormError(null);
+    clearError();
+    setIsSubmitting(true);
+
+    try {
+      await login(email, password);
+    } catch (err: any) {
+      setFormError(err?.detail || err?.message || "Failed to sign in");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const oauthDisabled = isLoading || isSubmitting;
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.18),_transparent_38%),linear-gradient(135deg,#eff6ff_0%,#dbeafe_45%,#f8fafc_100%)] px-6 py-12">
-      <div className="mx-auto grid min-h-[calc(100vh-6rem)] max-w-6xl gap-8 lg:grid-cols-[1.15fr_0.85fr]">
-        <section className="rounded-[2rem] border border-sky-100/80 bg-white/80 p-8 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-12">
-          <div className="max-w-xl space-y-8">
-            <div className="space-y-4">
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-600">
-                OAuth 2.0 Session Auth
+    <div className="relative min-h-screen overflow-hidden bg-[linear-gradient(180deg,#ffffff_0%,#fbfcfe_52%,#f5f7fa_100%)] px-6 py-10">
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute left-[-8rem] top-[-6rem] h-72 w-72 rounded-full bg-slate-200/50 blur-3xl" />
+        <div className="absolute bottom-[-8rem] right-[-3rem] h-80 w-80 rounded-full bg-slate-100/80 blur-3xl" />
+      </div>
+
+      <div className="relative mx-auto grid min-h-[calc(100vh-5rem)] max-w-6xl items-center gap-8 lg:grid-cols-[1.15fr_0.85fr]">
+        <section className="relative overflow-hidden rounded-[2.5rem] border border-sky-950/10 bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.18),_transparent_38%),linear-gradient(155deg,#0b1b47_0%,#065f46_52%,#192d63_100%)] p-8 text-white shadow-[0_35px_100px_rgba(15,23,42,0.18)] md:p-12">
+          <div className="absolute right-[-5rem] top-[-4rem] h-56 w-56 rounded-full border border-white/10" />
+          <div className="absolute right-8 top-12 h-36 w-36 rounded-full border border-white/10" />
+
+          <div className="relative flex h-full flex-col justify-between gap-10">
+            <div className="flex items-center gap-4">
+              <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-[1.75rem] bg-white shadow-lg">
+                <img
+                  src={resonatorLogo}
+                  alt="Resonator logo"
+                  className="h-14 w-14"
+                />
+              </div>
+              <div className="min-w-0">
+                <img
+                  src={resonatorWordmark}
+                  alt="Resonator"
+                  className="h-11 w-auto max-w-[14rem]"
+                />
+                <p className="mt-2 text-sm uppercase tracking-[0.28em] text-sky-100/80">
+                  AI Voice Generator
+                </p>
+              </div>
+            </div>
+
+            <div className="max-w-xl space-y-5">
+              <p className="text-sm font-semibold uppercase tracking-[0.28em] text-sky-100/85">
+                Workspace Access
               </p>
-              <h1 className="font-serif text-4xl tracking-tight text-slate-900 md:text-5xl">
-                Sign in once, switch accounts instantly.
+              <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl md:leading-[1.05]">
+                Sign in to the studio where your voices, projects, and history
+                live.
               </h1>
-              <p className="text-lg leading-8 text-slate-600">
-                This workspace now uses browser-session OAuth with multiple
-                stored accounts, per-account tokens, and instant account
-                switching without forcing a new login.
+              <p className="text-lg leading-8 text-sky-50/82">
+                Resonator keeps your voice workspace in one place so returning
+                to work feels immediate, not technical.
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/80 p-4">
-                <ShieldCheck className="h-6 w-6 text-sky-600" />
-                <p className="mt-3 text-sm font-semibold text-slate-900">
-                  Secure cookies
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-white/10 bg-white/6 p-4 backdrop-blur-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-100/80">
+                  Voice Library
                 </p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Tokens stay on the backend in the session store, not in
-                  localStorage.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/80 p-4">
-                <ArrowLeftRight className="h-6 w-6 text-sky-600" />
-                <p className="mt-3 text-sm font-semibold text-slate-900">
-                  Multi-account
-                </p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Add Google and GitHub accounts to the same session and swap
-                  active users instantly.
+                <p className="mt-2 text-sm leading-6 text-white/82">
+                  Keep your saved voices and generation history attached to the
+                  same workspace.
                 </p>
               </div>
-              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/80 p-4">
-                <UserPlus className="h-6 w-6 text-sky-600" />
-                <p className="mt-3 text-sm font-semibold text-slate-900">
-                  Select account
+              <div className="rounded-2xl border border-white/10 bg-white/6 p-4 backdrop-blur-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-100/80">
+                  Secure Access
                 </p>
-                <p className="mt-1 text-sm text-slate-600">
-                  New sign-ins request account selection so existing sessions
-                  are never overwritten.
+                <p className="mt-2 text-sm leading-6 text-white/82">
+                  Use the sign-in method already connected to your Resonator
+                  account.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/6 p-4 backdrop-blur-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-100/80">
+                  Fast Return
+                </p>
+                <p className="mt-2 text-sm leading-6 text-white/82">
+                  Jump back into projects without digging through setup details
+                  every time.
                 </p>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="rounded-[2rem] border border-slate-200/80 bg-white p-8 shadow-[0_30px_80px_rgba(15,23,42,0.08)] md:p-10">
-          <div className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight text-slate-900">
-                Continue with a provider
-              </h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                Choose an OAuth provider to start a browser session. You can add
-                more accounts later from the profile badge.
-              </p>
+        <Card className="rounded-[2.25rem] border border-white/70 bg-white/92 shadow-[0_30px_90px_rgba(15,23,42,0.10)] backdrop-blur">
+          <CardHeader className="space-y-4 px-8 pt-8 md:px-10 md:pt-10">
+            <div className="flex items-center gap-3">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white shadow-sm">
+                <img
+                  src={resonatorLogo}
+                  alt="Resonator logo"
+                  className="h-10 w-10"
+                />
+              </div>
+              <div className="min-w-0">
+                <div className="inline-flex rounded-xl bg-slate-900 px-3 py-2 shadow-sm">
+                  <img
+                    src={resonatorWordmark}
+                    alt="Resonator"
+                    className="h-8 w-auto max-w-[11rem]"
+                  />
+                </div>
+                <p className="mt-1 text-xs uppercase tracking-[0.24em] text-slate-600">
+                  Sign In
+                </p>
+              </div>
             </div>
+            <div className="space-y-2">
+              <CardTitle className="text-2xl font-semibold tracking-tight text-slate-900">
+                Welcome back
+              </CardTitle>
+              <CardDescription className="text-sm leading-6 text-slate-600">
+                Sign in with the method already linked to your account.
+              </CardDescription>
+            </div>
+          </CardHeader>
 
+          <CardContent className="space-y-6 px-8 pb-8 md:px-10 md:pb-10">
             {displayError && (
               <Alert className="border-red-200 bg-red-50 text-red-900">
                 <AlertDescription>{displayError}</AlertDescription>
               </Alert>
             )}
 
+            <form className="space-y-4" onSubmit={handleSubmit}>
+              <div className="space-y-2">
+                <Label htmlFor="login-email">Email</Label>
+                <Input
+                  id="login-email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    if (formError) {
+                      setFormError(null);
+                    }
+                  }}
+                  placeholder="you@example.com"
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="login-password">Password</Label>
+                <div className="relative">
+                  <Input
+                    id="login-password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.target.value);
+                      if (formError) {
+                        setFormError(null);
+                      }
+                    }}
+                    placeholder="Enter your password"
+                    className="pr-11"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-400 transition hover:text-slate-700"
+                    aria-label={
+                      showPassword ? "Hide password" : "Show password"
+                    }
+                    onClick={() => setShowPassword((current) => !current)}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                className="h-11 w-full rounded-xl bg-emerald-700 text-white hover:bg-emerald-800"
+                disabled={isSubmitting || isLoading}
+              >
+                {isSubmitting ? "Signing in..." : "Sign in"}
+              </Button>
+
+              <p className="text-xs leading-5 text-slate-500">
+                Email/password access becomes available after email
+                verification.
+              </p>
+            </form>
+
+            <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.24em] text-slate-400">
+              <div className="h-px flex-1 bg-slate-200" />
+              Other sign-in methods
+              <div className="h-px flex-1 bg-slate-200" />
+            </div>
+
             <div className="space-y-3">
-              {configuredProviders.map((provider) => (
-                <Button
-                  key={provider.id}
-                  type="button"
-                  className="h-12 w-full justify-between rounded-xl bg-slate-900 px-5 text-white hover:bg-slate-800"
-                  disabled={isLoading}
-                  onClick={() => beginOAuthLogin(provider.id)}
-                >
-                  <span>Continue with {provider.displayName}</span>
-                  <span className="text-xs uppercase tracking-[0.25em] text-white/70">
-                    OAuth
-                  </span>
-                </Button>
-              ))}
+              {configuredProviders.map((provider) => {
+                const ProviderIcon = getProviderIcon(provider.id);
+
+                return (
+                  <Button
+                    key={provider.id}
+                    type="button"
+                    variant="outline"
+                    className="h-11 w-full justify-start rounded-xl border-slate-300 px-4 text-slate-900 hover:bg-slate-50"
+                    disabled={oauthDisabled}
+                    onClick={() => beginOAuthLogin(provider.id)}
+                  >
+                    <span className="flex items-center gap-3">
+                      <ProviderIcon className="h-4 w-4" />
+                      Continue with {provider.displayName}
+                    </span>
+                  </Button>
+                );
+              })}
             </div>
 
             {configuredProviders.length === 0 && (
               <Alert className="border-amber-200 bg-amber-50 text-amber-950">
                 <AlertDescription>
-                  No OAuth providers are configured yet. Set the provider client
-                  IDs and secrets in the backend environment.
+                  External sign-in is unavailable right now. Use email and
+                  password instead.
                 </AlertDescription>
               </Alert>
             )}
 
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-              The backend stores each account separately with its own token set,
-              refresh state, and expiry. Switching accounts only changes the
-              active account in the current browser session.
-            </div>
-
             <p className="text-sm text-slate-600">
-              Need the sign-up wording instead? Visit{" "}
+              Need a new account?{" "}
               <Link
                 to="/register"
-                className="font-medium text-sky-700 hover:text-sky-800"
+                className="font-medium text-sky-700 transition underline hover:text-sky-800"
               >
-                the account creation page
+                Create one
               </Link>
               .
             </p>
-          </div>
-        </section>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
