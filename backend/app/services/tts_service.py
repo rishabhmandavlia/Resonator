@@ -10,6 +10,8 @@ from typing import Optional, Tuple
 import uuid
 from datetime import datetime
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -155,17 +157,31 @@ class TTSService:
         if abs(pitch - 1.0) < 1e-6:
             return waveform
 
-        if not TORCHAUDIO_AVAILABLE:
-            logger.warning("Pitch control was requested, but torchaudio is not available. Skipping pitch shift.")
-            return waveform
-
         n_steps = math.log2(pitch) * 12.0
-        shifted = torchaudio.functional.pitch_shift(
-            waveform.unsqueeze(0),
-            sample_rate=AUDIO_SAMPLE_RATE,
-            n_steps=n_steps,
-        )
-        return shifted.squeeze(0)
+
+        if TORCHAUDIO_AVAILABLE:
+            shifted = torchaudio.functional.pitch_shift(
+                waveform.unsqueeze(0),
+                sample_rate=AUDIO_SAMPLE_RATE,
+                n_steps=n_steps,
+            )
+            return shifted.squeeze(0)
+
+        try:
+            import librosa
+
+            shifted_np = librosa.effects.pitch_shift(
+                waveform.detach().cpu().numpy().astype(np.float32),
+                sr=AUDIO_SAMPLE_RATE,
+                n_steps=n_steps,
+            )
+            return torch.from_numpy(np.asarray(shifted_np)).to(waveform.device)
+        except Exception as error:
+            logger.warning(
+                "Pitch control was requested, but pitch shifting failed; returning original waveform: %s",
+                error,
+            )
+            return waveform
     
     @staticmethod
     def _generate_mock_audio(

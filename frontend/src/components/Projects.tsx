@@ -42,7 +42,7 @@ const EMPTY_FORM = {
 };
 
 export function Projects() {
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { hasValidActiveAccount, isLoading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -57,16 +57,26 @@ export function Projects() {
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
-    if (!authLoading && isAuthenticated) {
+    if (!authLoading && hasValidActiveAccount) {
       loadProjects();
     }
-  }, [authLoading, isAuthenticated]);
+  }, [authLoading, hasValidActiveAccount]);
 
   useEffect(() => {
-    if (retryCount > 0 && isAuthenticated) {
+    if (retryCount > 0 && hasValidActiveAccount) {
       loadProjects();
     }
-  }, [retryCount, isAuthenticated]);
+  }, [retryCount, hasValidActiveAccount]);
+
+  useEffect(() => {
+    if (!authLoading && !hasValidActiveAccount) {
+      setProjects([]);
+      setSelectedProject(null);
+      setEditingProject(null);
+      setError(null);
+      setIsLoading(false);
+    }
+  }, [authLoading, hasValidActiveAccount]);
 
   useEffect(() => {
     if (!selectedProject) {

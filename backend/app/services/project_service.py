@@ -206,6 +206,74 @@ class ProjectService:
             db.rollback()
             logger.error(f"Database error deleting generation {generation_id}: {e}")
             raise
+
+    @staticmethod
+    def filter_generations(
+        db: Session,
+        user_id: str,
+        project_id: str | None = None,
+        voice_id: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        min_duration: float | None = None,
+        max_duration: float | None = None,
+        search_text: str | None = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        skip: int = 0,
+        limit: int = 100
+    ) -> tuple[List[Generation], int]:
+        """
+        Filter generations with comprehensive query parameters.
+        Returns tuple of (generations list, total count).
+        """
+        try:
+            user_uuid = _as_uuid(user_id)
+            
+            # Base query - only user's own generations
+            query = db.query(Generation).filter(Generation.user_id == user_uuid)
+            
+            # Apply filters
+            if project_id:
+                query = query.filter(Generation.project_id == _as_uuid(project_id))
+            
+            if voice_id:
+                query = query.filter(Generation.voice_id == voice_id)
+            
+            if date_from:
+                query = query.filter(Generation.created_at >= date_from)
+            
+            if date_to:
+                query = query.filter(Generation.created_at <= date_to)
+            
+            if min_duration is not None:
+                query = query.filter(Generation.duration_seconds >= min_duration)
+            
+            if max_duration is not None:
+                query = query.filter(Generation.duration_seconds <= max_duration)
+            
+            if search_text:
+                search_pattern = f"%{search_text}%"
+                query = query.filter(Generation.text_prompt.ilike(search_pattern))
+            
+            # Get total count before pagination
+            total_count = query.count()
+            
+            # Apply sorting
+            sort_column = getattr(Generation, sort_by, Generation.created_at)
+            if sort_order.lower() == "asc":
+                query = query.order_by(sort_column.asc())
+            else:
+                query = query.order_by(sort_column.desc())
+            
+            # Apply pagination
+            query = query.offset(skip).limit(limit)
+            
+            return query.all(), total_count
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Database error filtering generations for user {user_id}: {e}")
+            return [], 0
     
     # ==================== FOLDER OPERATIONS ====================
     

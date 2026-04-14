@@ -6,6 +6,7 @@ import {
   Loader,
   Pause,
   Play,
+  Search,
   Trash2,
   Wand2,
   Waves,
@@ -28,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 
 export interface AudioLibraryItem {
@@ -53,6 +55,7 @@ interface AudioLibraryProps {
   emptyDescription: string;
   isLoading?: boolean;
   showProjectName?: boolean;
+  searchPlaceholder?: string;
   onDelete?: (item: AudioLibraryItem) => Promise<void>;
   onUseText?: (item: AudioLibraryItem) => void;
 }
@@ -66,6 +69,7 @@ export function AudioLibrary({
   emptyDescription,
   isLoading = false,
   showProjectName = false,
+  searchPlaceholder,
   onDelete,
   onUseText,
 }: AudioLibraryProps) {
@@ -76,6 +80,7 @@ export function AudioLibrary({
   const [selectedItem, setSelectedItem] = useState<AudioLibraryItem | null>(
     null,
   );
+  const [searchQuery, setSearchQuery] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
@@ -83,6 +88,25 @@ export function AudioLibrary({
     () => new Map(voices.map((voice) => [voice.id, voice.name])),
     [voices],
   );
+
+  const filteredItems = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return items;
+    }
+
+    return items.filter((item) => {
+      const previewText = item.text_prompt || item.text;
+      const voiceLabel = item.voice_id
+        ? voiceMap.get(item.voice_id) || item.voice_id
+        : "";
+
+      return [previewText, voiceLabel, item.project_name || ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [items, searchQuery, voiceMap]);
 
   useEffect(() => {
     return () => {
@@ -223,32 +247,46 @@ export function AudioLibrary({
             <CardDescription className="text-xs">{description}</CardDescription>
           </div>
           <Badge variant="secondary" className="bg-secondary/60">
-            {items.length} saved
+            {filteredItems.length} saved
           </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4 p-4 pt-0">
         {actionError && <p className="text-xs text-red-600">{actionError}</p>}
 
+        {searchPlaceholder && items.length > 0 && (
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={searchPlaceholder}
+              className="pl-10"
+            />
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
             <Loader className="mr-2 h-4 w-4 animate-spin" />
             Loading audio library...
           </div>
-        ) : items.length === 0 ? (
+        ) : filteredItems.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border/60 px-6 py-12 text-center">
             <Waves className="mx-auto mb-3 h-10 w-10 text-muted-foreground/60" />
             <h3 className="text-sm font-semibold text-foreground">
-              {emptyTitle}
+              {items.length === 0 ? emptyTitle : "No matching audio found"}
             </h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              {emptyDescription}
+              {items.length === 0
+                ? emptyDescription
+                : "Try a different search term to find the saved generation you need."}
             </p>
           </div>
         ) : (
           <ScrollArea className="h-[360px] pr-3">
             <div className="space-y-3">
-              {items.map((item) => {
+              {filteredItems.map((item) => {
                 const previewText = item.text_prompt || item.text;
                 const isPlaying = playingId === item.id;
                 const isBusy = loadingAudioId === item.id;

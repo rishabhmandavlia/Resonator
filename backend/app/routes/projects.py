@@ -389,6 +389,128 @@ def delete_project(
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
+# ==================== GENERATION FILTERING ENDPOINT ====================
+
+class FilteredGenerationsResponse(BaseModel):
+    """Response model for filtered generations."""
+    generations: List['GenerationResponse']
+    total_count: int
+    skip: int
+    limit: int
+
+
+@router.get("/generations/search", response_model=FilteredGenerationsResponse)
+def search_generations(
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    voice_id: Optional[str] = Query(None, description="Filter by voice ID"),
+    date_from: Optional[str] = Query(None, description="Filter generations from this date (ISO format)"),
+    date_to: Optional[str] = Query(None, description="Filter generations until this date (ISO format)"),
+    min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
+    max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
+    search_text: Optional[str] = Query(None, description="Search in text prompt"),
+    sort_by: str = Query("created_at", description="Sort field: created_at, duration_seconds, text_prompt"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=500, description="Number of records to return")
+):
+    """
+    Search and filter generations across all projects with advanced filtering.
+    
+    Supports filtering by:
+    - project_id: Limit to specific project
+    - voice_id: Filter by voice
+    - date_from, date_to: Date range filtering
+    - min_duration, max_duration: Duration range in seconds
+    - search_text: Text search in prompts
+    - sort_by: Sort by created_at, duration_seconds, or text_prompt
+    - sort_order: asc or desc
+    - Pagination: skip and limit
+    """
+    try:
+        # Parse dates if provided
+        parsed_date_from = None
+        parsed_date_to = None
+        
+        if date_from:
+            try:
+                # Handle various ISO format strings
+                # First try with time component
+                if 'T' in date_from or ' ' in date_from:
+                    parsed_date_from = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+                else:
+                    # Just date, add midnight time
+                    parsed_date_from = datetime.fromisoformat(date_from + "T00:00:00")
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date_from format. Use ISO format (e.g., 2024-01-15 or 2024-01-15T00:00:00)"
+                )
+        
+        if date_to:
+            try:
+                # Handle various ISO format strings
+                if 'T' in date_to or ' ' in date_to:
+                    parsed_date_to = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+                else:
+                    # Just date, add end of day time
+                    parsed_date_to = datetime.fromisoformat(date_to + "T23:59:59")
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date_to format. Use ISO format (e.g., 2024-01-15 or 2024-01-15T23:59:59)"
+                )
+        
+        # Validate sort_by
+        valid_sort_fields = ["created_at", "duration_seconds", "text_prompt"]
+        if sort_by not in valid_sort_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid sort_by. Must be one of: {', '.join(valid_sort_fields)}"
+            )
+        
+        # Validate sort_order
+        if sort_order.lower() not in ["asc", "desc"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid sort_order. Must be 'asc' or 'desc'"
+            )
+        
+        # Call the filter service
+        generations, total_count = ProjectService.filter_generations(
+            db=db,
+            user_id=current_user,
+            project_id=project_id,
+            voice_id=voice_id,
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            search_text=search_text,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            skip=skip,
+            limit=limit
+        )
+        
+        return FilteredGenerationsResponse(
+            generations=[serialize_generation(gen) for gen in generations],
+            total_count=total_count,
+            skip=skip,
+            limit=limit
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error searching generations")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Failed to search generations"}
+        )
+
+
 @router.get("/{project_id}/generations", response_model=List[GenerationResponse])
 def list_generations(
     project_id: str,

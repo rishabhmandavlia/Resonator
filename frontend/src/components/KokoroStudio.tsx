@@ -37,7 +37,6 @@ import { Alert, AlertDescription } from "./ui/alert";
 import { useAuth } from "../services/auth";
 import {
   apiClient,
-  type DraftResponse,
   type GenerationResponse,
   type ProjectSummary,
   type StoredGeneration,
@@ -97,7 +96,6 @@ export function KokoroStudio({
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [currentGeneration, setCurrentGeneration] =
     useState<GenerationResponse | null>(null);
-  const [drafts, setDrafts] = useState<DraftResponse[]>([]);
   const [savedGenerations, setSavedGenerations] = useState<StoredGeneration[]>(
     [],
   );
@@ -108,6 +106,16 @@ export function KokoroStudio({
     if (!authLoading && user) {
       loadProjects();
       loadVoices();
+    }
+  }, [authLoading, user]);
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      setProjects([]);
+      setSavedGenerations([]);
+      setCurrentGeneration(null);
+      setAudioUrl(null);
+      setIsLoadingProjects(false);
     }
   }, [authLoading, user]);
 
@@ -125,7 +133,6 @@ export function KokoroStudio({
 
   useEffect(() => {
     if (selectedProject === STANDALONE_PROJECT_ID) {
-      setDrafts([]);
       setSavedGenerations([]);
     }
   }, [selectedProject]);
@@ -140,7 +147,6 @@ export function KokoroStudio({
       selectedProject !== STANDALONE_PROJECT_ID &&
       projects.some((project) => project.id === selectedProject)
     ) {
-      loadDrafts();
       loadGenerations();
     }
   }, [authLoading, user, isLoadingProjects, projects, selectedProject]);
@@ -157,7 +163,6 @@ export function KokoroStudio({
       !projects.some((project) => project.id === selectedProject)
     ) {
       setSelectedProject(STANDALONE_PROJECT_ID);
-      setDrafts([]);
       setSavedGenerations([]);
     }
   }, [
@@ -218,28 +223,6 @@ export function KokoroStudio({
       );
     } finally {
       setIsLoadingVoices(false);
-    }
-  };
-
-  const loadDrafts = async () => {
-    try {
-      if (
-        !selectedProject ||
-        selectedProject === STANDALONE_PROJECT_ID ||
-        !projects.some((project) => project.id === selectedProject)
-      ) {
-        return;
-      }
-      const loaded = await apiClient.listDrafts(selectedProject);
-      setDrafts(loaded);
-    } catch (err: any) {
-      if (err?.status === 403) {
-        setSelectedProject(STANDALONE_PROJECT_ID);
-        setDrafts([]);
-        return;
-      }
-
-      console.error("Failed to load drafts:", err);
     }
   };
 
@@ -315,7 +298,7 @@ export function KokoroStudio({
           generation.id,
         );
 
-        await Promise.all([loadDrafts(), loadGenerations()]);
+        await loadGenerations();
       } else {
         // Standalone mode - generate without project
         const generation = await apiClient.generateAudio(
@@ -359,7 +342,6 @@ export function KokoroStudio({
       await apiClient.saveDraft(selectedProject, text, voice, speed, pitch);
 
       setSuccess("Draft saved successfully!");
-      await loadDrafts();
     } catch (err: any) {
       setError(err?.detail || "Failed to save draft");
     } finally {
@@ -394,14 +376,6 @@ export function KokoroStudio({
     }
 
     setSuccess("Loaded generation script into the editor.");
-  };
-
-  const handleLoadDraft = (draft: any) => {
-    setText(draft.text_prompt);
-    setVoice(draft.voice_id || "af_bella");
-    setSpeed(draft.speed);
-    setPitch(draft.pitch);
-    setSuccess(`Loaded draft: "${draft.text_prompt.substring(0, 50)}..."`);
   };
 
   const handlePlayPause = () => {
@@ -751,35 +725,10 @@ export function KokoroStudio({
                       description="Manage every saved audio clip in this project."
                       emptyTitle="No saved audio yet"
                       emptyDescription="Generate audio in this workspace and it will appear here with play, text, download, and delete actions."
+                      searchPlaceholder="Search saved audio by script, voice, or project..."
                       onDelete={handleDeleteGeneration}
                       onUseText={handleUseSavedGeneration}
                     />
-                  )}
-
-                  {isProjectMode && drafts.length > 0 && (
-                    <Card className="border-border/50 shadow-sm">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm">Recent Drafts</CardTitle>
-                      </CardHeader>
-                      <CardContent className="p-3 max-h-32 overflow-y-auto">
-                        <div className="space-y-2">
-                          {drafts.map((draft) => (
-                            <button
-                              key={draft.id}
-                              onClick={() => handleLoadDraft(draft)}
-                              className="w-full rounded border border-border/50 p-2 text-left text-xs transition hover:bg-secondary/50"
-                            >
-                              <p className="font-medium truncate">
-                                {draft.text_prompt.substring(0, 60)}...
-                              </p>
-                              <p className="text-muted-foreground">
-                                {draft.voice_id} • Speed: {draft.speed}x
-                              </p>
-                            </button>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
                   )}
                 </div>
 

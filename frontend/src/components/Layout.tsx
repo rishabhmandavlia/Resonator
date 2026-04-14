@@ -4,6 +4,8 @@ import { KokoroStudio } from "./KokoroStudio";
 import { Projects } from "./Projects";
 import { HistoryPage } from "./HistoryPage";
 import { RemoteStorage } from "./RemoteStorage";
+import { Alert, AlertDescription } from "./ui/alert";
+import { useAuth } from "../services/auth";
 
 const Settings = () => (
   <div className="p-6">
@@ -16,6 +18,7 @@ const Settings = () => (
 
 export function Layout() {
   const [currentPage, setCurrentPage] = useState("studio");
+  const { activeAccount, hasValidActiveAccount, isAuthenticated } = useAuth();
 
   const renderContent = () => {
     switch (currentPage) {
@@ -39,7 +42,19 @@ export function Layout() {
       <div className="flex-shrink-0">
         <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
       </div>
-      <main className="flex-1 overflow-auto">{renderContent()}</main>
+      <main className="flex-1 overflow-auto">
+        {isAuthenticated && !hasValidActiveAccount && activeAccount && (
+          <div className="mx-6 mt-6">
+            <Alert className="border-amber-200 bg-amber-50 text-amber-950">
+              <AlertDescription>
+                The active account needs to be reconnected. Switch to another
+                account or add this one again from the profile menu.
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+        {renderContent()}
+      </main>
     </div>
   );
 }

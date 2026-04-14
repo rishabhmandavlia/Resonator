@@ -26,6 +26,106 @@ class User(Base):
     # Relationships
     projects = relationship("Project", back_populates="user", cascade="all, delete-orphan")
     generations = relationship("Generation", back_populates="user", cascade="all, delete-orphan")
+    oauth_identities = relationship("OAuthIdentity", back_populates="user", cascade="all, delete-orphan")
+    session_accounts = relationship("SessionAccount", back_populates="user")
+
+
+class AuthSession(Base):
+    """Browser session that can contain multiple logged-in OAuth accounts."""
+    __tablename__ = "auth_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    active_account_id = Column(UUID(as_uuid=True), ForeignKey("session_accounts.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    user_agent = Column(String(500), nullable=True)
+    ip_address = Column(String(100), nullable=True)
+
+    accounts = relationship(
+        "SessionAccount",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        foreign_keys="SessionAccount.session_id",
+    )
+    active_account = relationship("SessionAccount", foreign_keys=[active_account_id], post_update=True)
+    oauth_states = relationship(
+        "OAuthAuthorizationState",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+
+class OAuthIdentity(Base):
+    """External OAuth identity linked to an application user."""
+    __tablename__ = "oauth_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_subject", name="uq_oauth_identity_provider_subject"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, index=True)
+    provider_subject = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=True, index=True)
+    display_name = Column(String(255), nullable=True)
+    avatar_url = Column(String(500), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True, index=True)
+
+    user = relationship("User", back_populates="oauth_identities")
+    session_accounts = relationship("SessionAccount", back_populates="identity")
+
+
+class SessionAccount(Base):
+    """An authenticated OAuth account stored within a browser session."""
+    __tablename__ = "session_accounts"
+    __table_args__ = (
+        UniqueConstraint("session_id", "provider", "provider_subject", name="uq_session_account_provider_subject"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    identity_id = Column(UUID(as_uuid=True), ForeignKey("oauth_identities.id"), nullable=True, index=True)
+    provider = Column(String(50), nullable=False, index=True)
+    provider_subject = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=True, index=True)
+    display_name = Column(String(255), nullable=True)
+    avatar_url = Column(String(500), nullable=True)
+    access_token_encrypted = Column(Text, nullable=False)
+    refresh_token_encrypted = Column(Text, nullable=True)
+    id_token_encrypted = Column(Text, nullable=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    token_type = Column(String(50), nullable=False, default="Bearer")
+    scopes_json = Column(Text, nullable=True)
+    is_valid = Column(Boolean, nullable=False, default=True, index=True)
+    invalid_reason = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True, index=True)
+
+    session = relationship("AuthSession", back_populates="accounts", foreign_keys=[session_id])
+    user = relationship("User", back_populates="session_accounts")
+    identity = relationship("OAuthIdentity", back_populates="session_accounts")
+
+
+class OAuthAuthorizationState(Base):
+    """Pending OAuth authorization request state for PKCE and CSRF validation."""
+    __tablename__ = "oauth_authorization_states"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, index=True)
+    state = Column(String(255), nullable=False, unique=True, index=True)
+    nonce = Column(String(255), nullable=True)
+    code_verifier = Column(String(255), nullable=False)
+    prompt = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+    session = relationship("AuthSession", back_populates="oauth_states")
 
 
 # ==================== VOICE MODEL ====================
@@ -76,7 +176,7 @@ class Generation(Base):
     text_prompt = Column(Text, nullable=False)
     speed = Column(Float, nullable=False, default=1.0)
     pitch = Column(Float, nullable=False, default=1.0)
-    duration_seconds = Column(Float, nullable=False, default=0.0)
+    duration_seconds = Column(Float, nullable=False, default=0.0, index=True)
     audio_path = Column(String(500), nullable=False)
     file_format = Column(String(20), nullable=False, default="wav")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)

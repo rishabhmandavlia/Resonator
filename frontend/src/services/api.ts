@@ -65,6 +65,49 @@ export interface StoredGeneration extends GenerationResponse {
   project_name?: string | null;
 }
 
+export interface FilteredGenerationsResponse {
+  generations: StoredGeneration[];
+  total_count: number;
+  skip: number;
+  limit: number;
+}
+
+export interface AuthProviderOption {
+  id: string;
+  displayName: string;
+  isConfigured: boolean;
+  supportsPrompt: boolean;
+}
+
+export interface SessionAccountSummary {
+  accountId: string;
+  userId: string;
+  provider: string;
+  providerLabel: string;
+  email: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  expiresAt: number | null;
+  isValid: boolean;
+  invalidReason: string | null;
+}
+
+export interface AuthSessionResponse {
+  accounts: SessionAccountSummary[];
+  activeAccountId: string | null;
+}
+
+export interface AuthProvidersResponse {
+  providers: AuthProviderOption[];
+}
+
+type RawFilteredGenerationsResponse = {
+  generations: RawGenerationResponse[];
+  total_count: number;
+  skip: number;
+  limit: number;
+};
+
 type RawDraftResponse = {
   id: string;
   project_id: string;
@@ -140,28 +183,23 @@ class ApiClient {
     options: RequestInit = {},
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    const token = localStorage.getItem("access_token");
 
     const headers: HeadersInit = {
       "Content-Type": "application/json",
       ...options.headers,
     };
 
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-
     try {
       const response = await fetch(url, {
         ...options,
+        credentials: "include",
         headers,
       });
 
       const responseText = await response.text();
 
       if (response.status === 401) {
-        localStorage.removeItem("access_token");
-        window.location.href = "/login";
+        window.dispatchEvent(new CustomEvent("auth:unauthorized"));
       }
 
       if (!response.ok) {
@@ -208,6 +246,56 @@ class ApiClient {
 
   // ==================== AUTH ENDPOINTS ====================
 
+  async getAuthProviders(): Promise<AuthProvidersResponse> {
+    return this.request<AuthProvidersResponse>("/api/auth/providers", {
+      method: "GET",
+    });
+  }
+
+  async getAuthSession(): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/session", {
+      method: "GET",
+    });
+  }
+
+  getOAuthStartUrl(
+    provider: string,
+    options?: { addAccount?: boolean; prompt?: string },
+  ): string {
+    const params = new URLSearchParams();
+    if (options?.addAccount) {
+      params.set("add_account", "true");
+    }
+    if (options?.prompt) {
+      params.set("prompt", options.prompt);
+    }
+
+    const suffix = params.toString();
+    return `${this.baseUrl}/api/auth/oauth/${provider}/start${suffix ? `?${suffix}` : ""}`;
+  }
+
+  async switchAccount(accountId: string): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/switch", {
+      method: "POST",
+      body: JSON.stringify({ accountId }),
+    });
+  }
+
+  async removeAccount(accountId: string): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>(
+      `/api/auth/accounts/${accountId}`,
+      {
+        method: "DELETE",
+      },
+    );
+  }
+
+  async logoutAll(): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/logout-all", {
+      method: "POST",
+    });
+  }
+
   /**
    * Register a new user
    */
@@ -246,8 +334,8 @@ class ApiClient {
   /**
    * Logout user
    */
-  logout(): void {
-    localStorage.removeItem("access_token");
+  async logout(): Promise<AuthSessionResponse> {
+    return this.logoutAll();
   }
 
   // ==================== PROJECT ENDPOINTS ====================
@@ -709,19 +797,11 @@ class ApiClient {
       return audioPath;
     }
 
-    const token = localStorage.getItem("access_token");
-    const headers: HeadersInit = {};
-
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-
     const targetUrl = new URL(audioPath, `${this.baseUrl}/`);
     const apiOrigin = new URL(this.baseUrl).origin;
-    const requestHeaders = targetUrl.origin === apiOrigin ? headers : {};
 
     const response = await fetch(targetUrl.toString(), {
-      headers: requestHeaders,
+      credentials: targetUrl.origin === apiOrigin ? "include" : "omit",
     });
     if (!response.ok) {
       throw new Error(`Failed to load audio: ${response.statusText}`);
@@ -747,19 +827,11 @@ class ApiClient {
       }
 
       try {
-        const token = localStorage.getItem("access_token");
-        const headers: HeadersInit = {};
-
-        if (token) {
-          headers.Authorization = `Bearer ${token}`;
-        }
-
         const targetUrl = new URL(audioPath, `${this.baseUrl}/`);
         const apiOrigin = new URL(this.baseUrl).origin;
-        const requestHeaders = targetUrl.origin === apiOrigin ? headers : {};
 
         const response = await fetch(targetUrl.toString(), {
-          headers: requestHeaders,
+          credentials: targetUrl.origin === apiOrigin ? "include" : "omit",
         });
 
         if (!response.ok) {
@@ -807,6 +879,52 @@ class ApiClient {
     );
 
     return normalizeGenerationResponse(generation);
+  }
+
+  async searchGenerations(params: {
+    projectId?: string | null;
+    voiceId?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    minDuration?: number | null;
+    maxDuration?: number | null;
+    searchText?: string | null;
+    sortBy?: string;
+    sortOrder?: string;
+    skip?: number;
+    limit?: number;
+  }): Promise<FilteredGenerationsResponse> {
+    const queryParams = new URLSearchParams();
+
+    if (params.projectId) queryParams.append("project_id", params.projectId);
+    if (params.voiceId) queryParams.append("voice_id", params.voiceId);
+    if (params.dateFrom) queryParams.append("date_from", params.dateFrom);
+    if (params.dateTo) queryParams.append("date_to", params.dateTo);
+    if (params.minDuration !== null && params.minDuration !== undefined)
+      queryParams.append("min_duration", params.minDuration.toString());
+    if (params.maxDuration !== null && params.maxDuration !== undefined)
+      queryParams.append("max_duration", params.maxDuration.toString());
+    if (params.searchText) queryParams.append("search_text", params.searchText);
+
+    queryParams.append("sort_by", params.sortBy || "created_at");
+    queryParams.append("sort_order", params.sortOrder || "desc");
+    queryParams.append("skip", (params.skip || 0).toString());
+    queryParams.append("limit", (params.limit || 50).toString());
+
+    const response = await this.request<RawFilteredGenerationsResponse>(
+      `/api/projects/generations/search?${queryParams.toString()}`,
+      {
+        method: "GET",
+      },
+    );
+
+    return {
+      ...response,
+      generations: response.generations.map((generation) => ({
+        ...normalizeGenerationResponse(generation),
+        project_name: null,
+      })),
+    };
   }
 }
 
