@@ -15,6 +15,9 @@ from database.models import (
 
 logger = logging.getLogger(__name__)
 
+STANDALONE_PROJECT_NAME = "Quick Generate"
+STANDALONE_PROJECT_DESCRIPTION = "System-managed workspace for standalone generations"
+
 
 def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
     if value is None:
@@ -40,6 +43,7 @@ class ProjectService:
                 user_id=_as_uuid(user_id),
                 name=name,
                 description=description,
+                is_system=False,
                 created_at=datetime.utcnow()
             )
             db.add(project)
@@ -70,6 +74,51 @@ class ProjectService:
         except Exception as e:
             db.rollback()
             logger.error(f"Unexpected error creating project: {e}")
+            raise
+
+    @staticmethod
+    def get_or_create_standalone_project(db: Session, user_id: str) -> Project:
+        """Get or create the hidden workspace that stores standalone generations."""
+        try:
+            user_uuid = _as_uuid(user_id)
+            project = (
+                db.query(Project)
+                .filter(
+                    Project.user_id == user_uuid,
+                    Project.is_system.is_(True),
+                )
+                .order_by(Project.created_at.asc())
+                .first()
+            )
+            if project:
+                return project
+
+            logger.info("Creating standalone system project for user: %s", user_id)
+            project = Project(
+                id=uuid.uuid4(),
+                user_id=user_uuid,
+                name=STANDALONE_PROJECT_NAME,
+                description=STANDALONE_PROJECT_DESCRIPTION,
+                is_system=True,
+                created_at=datetime.utcnow(),
+            )
+            db.add(project)
+            db.flush()
+
+            analytics = ProjectAnalytics(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                total_generations=0,
+                total_duration_seconds=0.0,
+                total_characters=0,
+            )
+            db.add(analytics)
+            db.commit()
+            db.refresh(project)
+            return project
+        except SQLAlchemyError as e:
+            db.rollback()
+            logger.error("Database error creating standalone project for user %s: %s", user_id, e)
             raise
     
     @staticmethod
@@ -105,14 +154,30 @@ class ProjectService:
             user_uuid = _as_uuid(user_id)
             
             # Own projects
-            owned = db.query(Project).filter(Project.user_id == user_uuid).all()
+            owned = (
+                db.query(Project)
+                .filter(
+                    Project.user_id == user_uuid,
+                    Project.is_system.is_(False),
+                )
+                .all()
+            )
             
             # Shared projects
             shared_ids = db.query(ProjectShare.project_id).filter(
                 ProjectShare.shared_with_user_id == user_uuid
             ).all()
             shared_ids = [s[0] for s in shared_ids]
-            shared = db.query(Project).filter(Project.id.in_(shared_ids)).all() if shared_ids else []
+            shared = (
+                db.query(Project)
+                .filter(
+                    Project.id.in_(shared_ids),
+                    Project.is_system.is_(False),
+                )
+                .all()
+                if shared_ids
+                else []
+            )
             
             return owned + shared
         
@@ -152,6 +217,10 @@ class ProjectService:
             
             project = db.query(Project).filter(Project.id == _as_uuid(project_id)).first()
             if not project:
+                return False
+
+            if project.is_system:
+                logger.warning("Refusing to delete system project %s", project_id)
                 return False
             
             db.delete(project)

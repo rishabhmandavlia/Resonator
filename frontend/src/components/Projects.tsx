@@ -232,224 +232,226 @@ export function Projects() {
 
   return (
     <>
-      <div className="min-h-[calc(100vh-3rem)] m-6 rounded-3xl overflow-hidden border border-border/50 bg-white shadow-sm">
-        <div className="h-full space-y-8 overflow-y-auto p-6 md:p-8 lg:p-10">
-          <div className="flex flex-col space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-                  Project Management
-                </h1>
-                <p className="mt-2 text-lg text-muted-foreground">
-                  Create dedicated workspaces for saved generations, scripts,
-                  and voice playback.
-                </p>
-              </div>
+      <div className="h-full p-6">
+        <div className="flex h-full min-h-0 flex-col rounded-3xl border border-border/50 bg-white shadow-sm">
+          <div className="flex-1 min-h-0 space-y-8 overflow-y-auto p-6 md:p-8 lg:p-10">
+            <div className="flex flex-col space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+                    Project Management
+                  </h1>
+                  <p className="mt-2 text-lg text-muted-foreground">
+                    Create dedicated workspaces for saved generations, scripts,
+                    and voice playback.
+                  </p>
+                </div>
 
-              <Dialog
-                open={isCreateDialogOpen}
-                onOpenChange={setIsCreateDialogOpen}
-              >
-                <DialogTrigger asChild>
-                  <Button className="h-11 gap-2 bg-primary px-6 text-primary-foreground hover:bg-primary/90">
-                    <Plus className="h-5 w-5" />
-                    New Project
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Create New Project</DialogTitle>
-                    <DialogDescription>
-                      Create a new project to keep generated audio, drafts, and
-                      scripts together.
-                    </DialogDescription>
-                  </DialogHeader>
-
-                  <form onSubmit={handleCreateProject} className="space-y-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-medium">
-                        Project Name
-                      </label>
-                      <Input
-                        placeholder="e.g., Podcast Episode"
-                        value={formData.name}
-                        onChange={(e) =>
-                          setFormData({ ...formData, name: e.target.value })
-                        }
-                        disabled={isSubmitting}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-medium">
-                        Description (Optional)
-                      </label>
-                      <Textarea
-                        placeholder="Describe the purpose of this project..."
-                        value={formData.description}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            description: e.target.value,
-                          })
-                        }
-                        disabled={isSubmitting}
-                        className="h-24"
-                      />
-                    </div>
-
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => setIsCreateDialogOpen(false)}
-                        disabled={isSubmitting}
-                      >
-                        Cancel
-                      </Button>
-                      <Button type="submit" disabled={isSubmitting}>
-                        {isSubmitting ? "Creating..." : "Create Project"}
-                      </Button>
-                    </div>
-                  </form>
-                </DialogContent>
-              </Dialog>
-            </div>
-          </div>
-
-          {success && (
-            <Alert className="border border-green-200 bg-green-50">
-              <AlertDescription className="text-green-800">
-                {success}
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {error && (
-            <Alert className="flex items-center justify-between border border-red-200 bg-red-50">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 flex-shrink-0 text-red-600" />
-                <AlertDescription className="text-red-800">
-                  {error}
-                </AlertDescription>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => loadProjects()}
-              >
-                Try Again
-              </Button>
-            </Alert>
-          )}
-
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <p className="text-gray-600">Loading projects...</p>
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-200 py-12">
-              <FolderKanban className="mb-4 h-12 w-12 text-gray-400" />
-              <h3 className="mb-2 text-lg font-semibold text-gray-900">
-                No projects yet
-              </h3>
-              <p className="mb-4 text-gray-600">
-                Create your first project to start storing generations.
-              </p>
-              <Button
-                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
-                onClick={() => setIsCreateDialogOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
-                Create Project
-              </Button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {projects.map((project, index) => (
-                <Card
-                  key={project.id}
-                  className="group cursor-pointer transition-all hover:border-primary/50"
+                <Dialog
+                  open={isCreateDialogOpen}
+                  onOpenChange={setIsCreateDialogOpen}
                 >
-                  <CardContent className="space-y-6 p-6">
-                    <div className="flex items-start justify-between">
+                  <DialogTrigger asChild>
+                    <Button className="h-11 gap-2 bg-primary px-6 text-primary-foreground hover:bg-primary/90">
+                      <Plus className="h-5 w-5" />
+                      New Project
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Create New Project</DialogTitle>
+                      <DialogDescription>
+                        Create a new project to keep generated audio and scripts
+                        together.
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <form onSubmit={handleCreateProject} className="space-y-4">
+                      <div>
+                        <label className="mb-2 block text-sm font-medium">
+                          Project Name
+                        </label>
+                        <Input
+                          placeholder="e.g., Podcast Episode"
+                          value={formData.name}
+                          onChange={(e) =>
+                            setFormData({ ...formData, name: e.target.value })
+                          }
+                          disabled={isSubmitting}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium">
+                          Description (Optional)
+                        </label>
+                        <Textarea
+                          placeholder="Describe the purpose of this project..."
+                          value={formData.description}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              description: e.target.value,
+                            })
+                          }
+                          disabled={isSubmitting}
+                          className="h-24"
+                        />
+                      </div>
+
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setIsCreateDialogOpen(false)}
+                          disabled={isSubmitting}
+                        >
+                          Cancel
+                        </Button>
+                        <Button type="submit" disabled={isSubmitting}>
+                          {isSubmitting ? "Creating..." : "Create Project"}
+                        </Button>
+                      </div>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </div>
+
+            {success && (
+              <Alert className="border border-green-200 bg-green-50">
+                <AlertDescription className="text-green-800">
+                  {success}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {error && (
+              <Alert className="flex items-center justify-between border border-red-200 bg-red-50">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0 text-red-600" />
+                  <AlertDescription className="text-red-800">
+                    {error}
+                  </AlertDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => loadProjects()}
+                >
+                  Try Again
+                </Button>
+              </Alert>
+            )}
+
+            {isLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <p className="text-gray-600">Loading projects...</p>
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-200 py-12">
+                <FolderKanban className="mb-4 h-12 w-12 text-gray-400" />
+                <h3 className="mb-2 text-lg font-semibold text-gray-900">
+                  No projects yet
+                </h3>
+                <p className="mb-4 text-gray-600">
+                  Create your first project to start storing generations.
+                </p>
+                <Button
+                  className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
+                  onClick={() => setIsCreateDialogOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Project
+                </Button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {projects.map((project, index) => (
+                  <Card
+                    key={project.id}
+                    className="group cursor-pointer transition-all hover:border-primary/50"
+                  >
+                    <CardContent className="space-y-6 p-6">
+                      <div className="flex items-start justify-between">
+                        <button
+                          type="button"
+                          className={`flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md ${getColorForProject(index)}`}
+                          onClick={() => setSelectedProject(project)}
+                          title="Open project"
+                        >
+                          <FolderKanban className="h-6 w-6" />
+                        </button>
+
+                        <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground"
+                            onClick={() => openEditProject(project)}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
+                            onClick={() => handleDeleteProject(project.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+
                       <button
                         type="button"
-                        className={`flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md ${getColorForProject(index)}`}
                         onClick={() => setSelectedProject(project)}
-                        title="Open project"
+                        className="text-left"
                       >
-                        <FolderKanban className="h-6 w-6" />
+                        <h3
+                          className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
+                          title={project.name}
+                        >
+                          {project.name}
+                        </h3>
+                        {project.description && (
+                          <p className="mt-1 line-clamp-2 text-sm text-gray-600">
+                            {project.description}
+                          </p>
+                        )}
+                        <div className="mt-2 flex items-center gap-2">
+                          <Badge
+                            variant="secondary"
+                            className="bg-secondary/50 text-xs font-normal"
+                          >
+                            Workspace Ready
+                          </Badge>
+                        </div>
                       </button>
 
-                      <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+                        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                          <Clock className="h-4 w-4" />
+                          {formatDistanceToNow(new Date(project.updated_at), {
+                            addSuffix: true,
+                          })}
+                        </div>
+
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-muted-foreground"
-                          onClick={() => openEditProject(project)}
+                          size="sm"
+                          className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
+                          onClick={() => setSelectedProject(project)}
                         >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
-                          onClick={() => handleDeleteProject(project.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
+                          <Maximize2 className="h-4 w-4" />
+                          Open
                         </Button>
                       </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelectedProject(project)}
-                      className="text-left"
-                    >
-                      <h3
-                        className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
-                        title={project.name}
-                      >
-                        {project.name}
-                      </h3>
-                      {project.description && (
-                        <p className="mt-1 line-clamp-2 text-sm text-gray-600">
-                          {project.description}
-                        </p>
-                      )}
-                      <div className="mt-2 flex items-center gap-2">
-                        <Badge
-                          variant="secondary"
-                          className="bg-secondary/50 text-xs font-normal"
-                        >
-                          Workspace Ready
-                        </Badge>
-                      </div>
-                    </button>
-
-                    <div className="flex items-center justify-between border-t border-border/50 pt-4">
-                      <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                        <Clock className="h-4 w-4" />
-                        {formatDistanceToNow(new Date(project.updated_at), {
-                          addSuffix: true,
-                        })}
-                      </div>
-
-                      <Button
-                        size="sm"
-                        className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
-                        onClick={() => setSelectedProject(project)}
-                      >
-                        <Maximize2 className="h-4 w-4" />
-                        Open
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -2,7 +2,6 @@ import {
   Eye,
   EyeOff,
   Github,
-  Globe2,
   KeyRound,
   Mail,
   RefreshCcw,
@@ -27,6 +26,7 @@ import {
   InputOTPSlot,
 } from "../components/ui/input-otp";
 import { Label } from "../components/ui/label";
+import { GoogleIcon } from "../components/ui/provider-icons";
 import type { RegistrationChallengeResponse } from "../services/api";
 import { useAuth } from "../services/auth";
 
@@ -35,7 +35,7 @@ function getProviderIcon(providerId: string) {
     case "github":
       return Github;
     case "google":
-      return Globe2;
+      return GoogleIcon;
     default:
       return KeyRound;
   }
@@ -288,7 +288,7 @@ export function Register() {
                 </p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <Globe2 className="h-5 w-5 text-emerald-300" />
+                <GoogleIcon className="h-5 w-5" />
                 <p className="mt-3 text-sm font-semibold">
                   OAuth still available
                 </p>

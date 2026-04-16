@@ -215,7 +215,7 @@ export function AudioLibrary({
     }
 
     const confirmed = window.confirm(
-      "Delete this generation from the project history?",
+      "Delete this generation from your history?",
     );
     if (!confirmed) {
       return;

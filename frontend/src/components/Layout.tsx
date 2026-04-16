@@ -38,11 +38,11 @@ export function Layout() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       <div className="flex-shrink-0">
         <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
       </div>
-      <main className="flex-1 overflow-auto">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {isAuthenticated && !hasValidActiveAccount && activeAccount && (
           <div className="mx-6 mt-6">
             <Alert className="border-amber-200 bg-amber-50 text-amber-950">
@@ -53,7 +53,7 @@ export function Layout() {
             </Alert>
           </div>
         )}
-        {renderContent()}
+        <div className="min-h-0 flex-1 overflow-hidden">{renderContent()}</div>
       </main>
     </div>
   );

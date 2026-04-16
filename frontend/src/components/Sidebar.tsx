@@ -7,7 +7,6 @@ import {
   Database,
   FolderKanban,
   Github,
-  Globe2,
   History,
   KeyRound,
   LogOut,
@@ -50,10 +49,14 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { GoogleIcon } from "./ui/provider-icons";
 import { cn } from "./ui/utils";
 
 interface SidebarProps {
@@ -63,7 +66,6 @@ interface SidebarProps {
 
 type PendingLogoutAction =
   | { kind: "account"; account: SessionAccountSummary }
-  | { kind: "current"; account: SessionAccountSummary | null }
   | { kind: "all" };
 
 function buildInitials(value: string) {
@@ -80,7 +82,7 @@ function getProviderIcon(provider: string) {
     case "github":
       return Github;
     case "google":
-      return Globe2;
+      return GoogleIcon;
     case "email":
       return Mail;
     default:
@@ -93,7 +95,7 @@ function getProviderBadgeClasses(provider: string) {
     case "github":
       return "bg-slate-900 text-white";
     case "google":
-      return "bg-sky-100 text-sky-700";
+      return "bg-white text-slate-700 ring-1 ring-slate-200";
     case "email":
       return "bg-emerald-100 text-emerald-700";
     default:
@@ -153,7 +155,6 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
     login,
     switchAccount,
     logoutAccount,
-    logoutCurrentAccount,
     logoutAll,
   } = useAuth();
 
@@ -191,8 +192,6 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
   const configuredProviders = providers.filter(
     (provider) => provider.isConfigured,
   );
-  const currentAccountLabel =
-    getAccountLabel(activeAccount) || "the active user";
 
   const openLogoutDialog = (action: PendingLogoutAction) => {
     clearError();
@@ -216,8 +215,6 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
     try {
       if (pendingLogoutAction.kind === "account") {
         await logoutAccount(pendingLogoutAction.account.accountId);
-      } else if (pendingLogoutAction.kind === "current") {
-        await logoutCurrentAccount();
       } else {
         await logoutAll();
       }
@@ -275,15 +272,11 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
     }
 
     if (pendingLogoutAction.kind === "account") {
-      return `Log out ${getAccountLabel(pendingLogoutAction.account)}?`;
+      return `Remove ${getAccountLabel(pendingLogoutAction.account)}?`;
     }
 
-    if (pendingLogoutAction.kind === "current") {
-      return `Log out ${currentAccountLabel}?`;
-    }
-
-    return "Log out all users?";
-  }, [currentAccountLabel, pendingLogoutAction]);
+    return "Sign out all accounts?";
+  }, [pendingLogoutAction]);
 
   const logoutDialogDescription = useMemo(() => {
     if (!pendingLogoutAction) {
@@ -294,17 +287,13 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
       return "This removes only the selected user from the current browser session. Other signed-in users stay available.";
     }
 
-    if (pendingLogoutAction.kind === "current") {
-      return "The active user will be removed from this browser session. If other signed-in users remain, one of them becomes active automatically.";
-    }
-
-    return "This removes every signed-in user from the current browser session and clears the session cookie.";
+    return "This signs every account out of the current browser session and clears the session cookie.";
   }, [pendingLogoutAction]);
 
   const navigationItems = [
     {
       id: "studio",
-      name: "Kokoro Studio",
+      name: "Resonator",
       icon: Mic2,
       description: "Text-to-speech generation",
     },
@@ -338,23 +327,24 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
     <div className="ml-6 my-6">
       <div
         className={cn(
-          "flex h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-3xl border border-sidebar-border/20 bg-gradient-to-b from-sidebar via-sidebar to-sidebar-accent shadow-2xl transition-all duration-300 ease-in-out",
+          "relative flex h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-[2rem] border border-sidebar-border/20 bg-gradient-to-b from-sidebar via-sidebar to-sidebar-accent shadow-[0_24px_70px_rgba(15,23,42,0.24)] transition-all duration-300 ease-in-out",
           isExpanded ? "w-72" : "w-20",
         )}
       >
         <div
           className={cn(
-            "relative border-b border-sidebar-border/20",
+            "relative border-b border-white/10 bg-white/[0.03] backdrop-blur-[2px]",
             isExpanded ? "px-5 py-5" : "px-4 py-5",
           )}
         >
+          <div className="pointer-events-none absolute inset-x-5 top-0 h-px bg-white/14" />
           <div
             className={cn(
               "flex items-center",
               isExpanded ? "gap-3" : "justify-center",
             )}
           >
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[1.25rem] bg-white shadow-lg">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[1.35rem] border border-white/70 bg-white shadow-[0_14px_30px_rgba(255,255,255,0.16)] ring-1 ring-black/5">
               <img
                 src={resonatorLogo}
                 alt="Resonator logo"
@@ -387,7 +377,7 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
               type="button"
               onClick={() => setIsExpanded((current) => !current)}
               className={cn(
-                "flex h-10 w-10 items-center justify-center rounded-full border border-sidebar-border/30 bg-sidebar-accent/60 text-sidebar-foreground transition-all duration-200 hover:scale-110 hover:bg-sidebar-accent",
+                "flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-white/6 text-sidebar-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-sm transition-all duration-200 hover:scale-105 hover:bg-white/10 hover:shadow-[0_10px_25px_rgba(15,23,42,0.18)]",
                 isExpanded && "w-12",
               )}
               aria-label={
@@ -413,21 +403,25 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                   <button
                     onClick={() => handleNavigationClick(item.id)}
                     className={cn(
-                      "relative flex items-center overflow-hidden transition-all duration-300 hover:scale-110 hover:shadow-lg",
+                      "relative flex items-center overflow-hidden border border-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_28px_rgba(15,23,42,0.16)]",
                       isExpanded
-                        ? "w-full justify-start rounded-xl px-4 py-3"
-                        : "mx-auto h-12 w-12 justify-center rounded-full",
+                        ? "w-full justify-start rounded-2xl px-4 py-3.5"
+                        : "mx-auto h-12 w-12 justify-center rounded-[1.1rem]",
                       isActive
-                        ? "scale-105 bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 shadow-lg shadow-sidebar-primary/30"
-                        : "bg-gradient-to-br from-sidebar-accent to-sidebar-accent/80 hover:from-sidebar-primary/80 hover:to-sidebar-primary/60",
+                        ? "border-white/15 bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 shadow-[0_18px_35px_rgba(34,197,94,0.18)] ring-1 ring-white/12"
+                        : "border-white/8 bg-white/6 hover:border-white/20 hover:bg-white/12",
                     )}
                   >
+                    {!isActive && isExpanded && (
+                      <div className="pointer-events-none absolute inset-y-0 left-0 w-px bg-white/8" />
+                    )}
+
                     <Icon
                       className={cn(
                         "h-5 w-5 shrink-0 transition-colors duration-300",
                         isActive
-                          ? "text-sidebar-primary-foreground"
-                          : "text-sidebar-accent-foreground group-hover:text-sidebar-primary-foreground",
+                          ? "text-white"
+                          : "text-white/90 group-hover:text-white",
                       )}
                     />
 
@@ -437,14 +431,14 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                           className={cn(
                             "whitespace-nowrap text-sm font-medium transition-colors duration-300",
                             isActive
-                              ? "text-sidebar-primary-foreground"
-                              : "text-sidebar-accent-foreground group-hover:text-sidebar-primary-foreground",
+                              ? "text-white"
+                              : "text-white/92 group-hover:text-white",
                           )}
                         >
                           {item.name}
                         </div>
                         {isActive && (
-                          <div className="mt-0.5 whitespace-nowrap text-xs text-sidebar-primary-foreground/70">
+                          <div className="mt-0.5 whitespace-nowrap text-xs text-white/72">
                             {item.description}
                           </div>
                         )}
@@ -453,13 +447,13 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
 
                     {isActive && !isExpanded && (
                       <>
-                        <div className="absolute inset-0 animate-pulse rounded-full bg-sidebar-primary opacity-20" />
+                        <div className="absolute inset-0 animate-pulse rounded-[1.1rem] bg-sidebar-primary opacity-20" />
                         <div className="absolute -right-2 top-1/2 h-6 w-1 -translate-y-1/2 rounded-l-full bg-sidebar-primary" />
                       </>
                     )}
 
                     {isActive && isExpanded && (
-                      <div className="absolute right-2 top-1/2 h-2 w-2 -translate-y-1/2 animate-pulse rounded-full bg-sidebar-primary-foreground" />
+                      <div className="absolute right-3 top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full bg-sidebar-primary-foreground shadow-[0_0_0_4px_rgba(255,255,255,0.08)]" />
                     )}
                   </button>
 
@@ -478,19 +472,19 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
           </div>
         </nav>
 
-        <div className="border-t border-sidebar-border/30 p-4">
+        <div className="border-t border-white/10 bg-gradient-to-b from-transparent to-black/5 p-4 backdrop-blur-sm">
           <DropdownMenu>
             <div className="relative group">
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
                   className={cn(
-                    "flex w-full items-center rounded-2xl bg-sidebar-accent/60 transition-all duration-300 hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-primary/60",
+                    "flex w-full items-center rounded-[1.6rem] border border-white/10 bg-white/6 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/9 hover:shadow-[0_16px_32px_rgba(15,23,42,0.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-primary/60",
                     isExpanded ? "gap-3 px-3 py-3" : "justify-center px-2 py-3",
                   )}
                   aria-label="Open account menu"
                 >
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 text-lg font-semibold text-sidebar-primary-foreground shadow-lg">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/10 bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 text-lg font-semibold text-sidebar-primary-foreground shadow-[0_14px_26px_rgba(34,197,94,0.2)]">
                     {userInitials || "AU"}
                   </div>
 
@@ -514,8 +508,10 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
 
               <DropdownMenuContent
                 align={isExpanded ? "start" : "center"}
-                className="w-80 rounded-2xl p-2"
+                className="w-80 rounded-[1.75rem] border border-slate-200/80 bg-white/95 px-2.5 pt-2.5 pb-3.5 shadow-[0_28px_80px_rgba(15,23,42,0.18)] backdrop-blur-xl"
+                collisionPadding={{ top: 16, right: 16, bottom: 24, left: 16 }}
                 side={isExpanded ? "top" : "right"}
+                sideOffset={24}
               >
                 <DropdownMenuLabel className="pb-2">
                   <div className="flex items-center justify-between gap-3">
@@ -561,81 +557,87 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                       <div
                         key={account.accountId}
                         className={cn(
-                          "flex items-start gap-3 rounded-xl border px-3 py-3",
+                          "grid grid-cols-[auto,minmax(0,1fr),auto] items-start gap-2.5 rounded-[1.15rem] border px-2.5 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] transition-all duration-200",
                           isActive
-                            ? "border-sky-200 bg-sky-50"
-                            : "border-slate-200 bg-white",
+                            ? "border-sky-200 bg-sky-50 shadow-[0_12px_24px_rgba(14,165,233,0.08)]"
+                            : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-[0_10px_20px_rgba(15,23,42,0.06)]",
                         )}
                       >
-                        <div className="flex min-w-0 flex-1 items-center gap-3">
-                          <div className="relative shrink-0">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
-                              {accountInitials || "AU"}
-                            </div>
-                            <div
-                              className={cn(
-                                "absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-white",
-                                getProviderBadgeClasses(
-                                  primaryProvider?.type || "email",
-                                ),
-                              )}
-                            >
-                              <ProviderIcon className="h-3 w-3" />
-                            </div>
+                        <div className="relative mt-0.5 shrink-0">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-[11px] font-semibold text-white">
+                            {accountInitials || "AU"}
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <p className="truncate text-sm font-semibold text-slate-900">
-                                {accountLabel}
-                              </p>
-                              {isActive && (
-                                <Badge variant="secondary" className="shrink-0">
-                                  Active
-                                </Badge>
-                              )}
-                            </div>
-                            <p className="truncate text-xs text-slate-500">
-                              {getProviderSummary(account)}
-                              {account.email ? ` · ${account.email}` : ""}
-                            </p>
-                            {account.providers.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {account.providers.map((provider) => {
-                                  const ProviderBadgeIcon = getProviderIcon(
-                                    provider.type,
-                                  );
-                                  return (
-                                    <Badge
-                                      key={`${account.accountId}-${provider.type}`}
-                                      variant="secondary"
-                                      className={cn(
-                                        "gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
-                                        getProviderBadgeClasses(provider.type),
-                                      )}
-                                    >
-                                      <ProviderBadgeIcon className="h-3 w-3" />
-                                      {provider.label}
-                                    </Badge>
-                                  );
-                                })}
-                              </div>
+                          <div
+                            className={cn(
+                              "absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border border-white",
+                              getProviderBadgeClasses(
+                                primaryProvider?.type || "email",
+                              ),
                             )}
-                            {!account.isValid && (
-                              <p className="mt-1 text-xs text-red-600">
-                                {account.invalidReason ||
-                                  "This user needs to be added again."}
-                              </p>
-                            )}
+                          >
+                            <ProviderIcon className="h-2.5 w-2.5" />
                           </div>
                         </div>
 
-                        <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <p className="truncate text-sm font-semibold text-slate-900">
+                              {accountLabel}
+                            </p>
+                            {isActive && (
+                              <Badge
+                                variant="secondary"
+                                className="shrink-0 rounded-full px-1.5 py-0 text-[10px] leading-4"
+                              >
+                                Active
+                              </Badge>
+                            )}
+                          </div>
+                          {account.email && (
+                            <p
+                              className="mt-0.5 truncate text-xs font-medium text-slate-600"
+                              title={account.email}
+                            >
+                              {account.email}
+                            </p>
+                          )}
+                          {account.providers.length > 0 && (
+                            <div className="mt-1.5 flex items-center gap-1.5">
+                              {account.providers.map((provider) => {
+                                const ProviderBadgeIcon = getProviderIcon(
+                                  provider.type,
+                                );
+                                return (
+                                  <span
+                                    key={`${account.accountId}-${provider.type}`}
+                                    aria-label={provider.label}
+                                    className={cn(
+                                      "flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
+                                      getProviderBadgeClasses(provider.type),
+                                    )}
+                                    title={provider.label}
+                                  >
+                                    <ProviderBadgeIcon className="h-2.5 w-2.5" />
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {!account.isValid && (
+                            <p className="mt-1 text-xs text-red-600">
+                              {account.invalidReason ||
+                                "This user needs to be added again."}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-1 pt-0.5">
                           <Button
                             type="button"
                             variant={isActive ? "secondary" : "outline"}
                             size="sm"
                             className={cn(
-                              "h-9 rounded-full px-3",
+                              "h-8 gap-1 rounded-full px-2.5 text-[11px] font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]",
                               isActive
                                 ? "bg-slate-900 text-white hover:bg-slate-900"
                                 : "border-slate-300 bg-white hover:bg-slate-50",
@@ -645,14 +647,17 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                               void switchAccount(account.accountId)
                             }
                           >
-                            <ArrowRightLeft className="h-3.5 w-3.5" />
+                            {!isActive && (
+                              <ArrowRightLeft className="h-3 w-3" />
+                            )}
                             {isActive ? "Current" : "Switch"}
                           </Button>
 
                           <button
                             type="button"
-                            className="flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-red-600"
-                            aria-label={`Log out ${accountLabel}`}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-red-600"
+                            aria-label={`Remove ${accountLabel} from this session`}
+                            title={`Remove ${accountLabel} from this session`}
                             onClick={() =>
                               openLogoutDialog({ kind: "account", account })
                             }
@@ -667,54 +672,86 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
 
                 <DropdownMenuSeparator />
 
-                <DropdownMenuItem onSelect={handleOpenEmailDialog}>
-                  <Mail className="h-4 w-4" />
-                  Sign in with email
-                </DropdownMenuItem>
+                <div className="px-1 pt-2 pb-1">
+                  <div className="rounded-[1.3rem] border border-slate-200 bg-slate-50/90 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger className="rounded-xl px-2.5 py-2.5 data-[state=open]:bg-white">
+                        <KeyRound className="mr-3.5 h-4 w-4 shrink-0 text-slate-600" />
+                        <div className="flex min-w-0 flex-col items-start">
+                          <span className="text-sm font-medium text-slate-900">
+                            Add account
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            Email or connected providers
+                          </span>
+                        </div>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="w-60 rounded-[1.2rem] border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_22px_50px_rgba(15,23,42,0.16)] backdrop-blur-xl">
+                        <DropdownMenuItem
+                          className="rounded-xl px-2.5 py-2.5"
+                          onSelect={handleOpenEmailDialog}
+                        >
+                          <Mail className="h-4 w-4" />
+                          <div className="ml-1 flex flex-col items-start">
+                            <span className="font-medium text-slate-900">
+                              Email
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              Add another email account
+                            </span>
+                          </div>
+                        </DropdownMenuItem>
 
-                {configuredProviders.map((provider) => (
-                  <DropdownMenuItem
-                    key={provider.id}
-                    onSelect={() =>
-                      beginOAuthLogin(provider.id, { addAccount: true })
-                    }
-                  >
-                    {(() => {
-                      const ProviderIcon = getProviderIcon(provider.id);
-                      return <ProviderIcon className="h-4 w-4" />;
-                    })()}
-                    Sign in with {provider.displayName}
-                  </DropdownMenuItem>
-                ))}
+                        {configuredProviders.map((provider) => (
+                          <DropdownMenuItem
+                            key={provider.id}
+                            className="rounded-xl px-2.5 py-2.5"
+                            onSelect={() =>
+                              beginOAuthLogin(provider.id, { addAccount: true })
+                            }
+                          >
+                            {(() => {
+                              const ProviderIcon = getProviderIcon(provider.id);
+                              return <ProviderIcon className="h-4 w-4" />;
+                            })()}
+                            <div className="ml-1 flex flex-col items-start">
+                              <span className="font-medium text-slate-900">
+                                {provider.displayName}
+                              </span>
+                              <span className="text-xs text-slate-500">
+                                Add with {provider.displayName}
+                              </span>
+                            </div>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
 
-                {accounts.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={() =>
-                        openLogoutDialog({
-                          kind: "current",
-                          account: activeAccount,
-                        })
-                      }
-                      variant="destructive"
-                      disabled={!activeAccountId}
-                    >
-                      <LogOut className="h-4 w-4" />
-                      Log out current user
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={() => openLogoutDialog({ kind: "all" })}
-                      variant="destructive"
-                    >
-                      <LogOut className="h-4 w-4" />
-                      Log out all users
-                    </DropdownMenuItem>
-                  </>
-                )}
+                    {accounts.length > 0 && (
+                      <>
+                        <div className="mx-2.5 my-1.5 h-px bg-slate-200" />
+                        <DropdownMenuItem
+                          className="rounded-xl px-2.5 py-2.5"
+                          onSelect={() => openLogoutDialog({ kind: "all" })}
+                          variant="destructive"
+                        >
+                          <LogOut className="h-4 w-4" />
+                          <div className="ml-1 flex flex-col items-start">
+                            <span className="font-medium text-current">
+                              Sign out all accounts
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              Clear this browser session
+                            </span>
+                          </div>
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </div>
+                </div>
 
                 {(logoutDialogError || error) && (
-                  <div className="px-1 pt-2">
+                  <div className="px-1 pt-2 pb-1">
                     <Alert className="border-red-200 bg-red-50 text-red-900">
                       <AlertDescription>
                         {logoutDialogError || error}

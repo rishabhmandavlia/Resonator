@@ -3,7 +3,7 @@
  * Text-to-speech generation interface with persistent state management
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Badge } from "./ui/badge";
 import {
   Card,
@@ -23,10 +23,6 @@ import {
 } from "./ui/select";
 import { Slider } from "./ui/slider";
 import {
-  Play,
-  Pause,
-  Save,
-  Download,
   Sparkles,
   Wand2,
   RefreshCw,
@@ -44,6 +40,7 @@ import {
 } from "../services/api";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { AudioLibrary, type AudioLibraryItem } from "./AudioLibrary";
+import { AudioWaveformPlayer } from "./AudioWaveformPlayer";
 
 // Storage key prefix for this component
 const STORAGE_PREFIX = "kokoro_studio_";
@@ -59,7 +56,6 @@ export function KokoroStudio({
   lockProjectSelection?: boolean;
 } = {}) {
   const { user, isLoading: authLoading } = useAuth();
-  const audioRef = useRef<HTMLAudioElement>(null);
 
   // Persistent state management
   const [text, setText] = usePersistentState<string>(
@@ -89,8 +85,6 @@ export function KokoroStudio({
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isLoadingVoices, setIsLoadingVoices] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -137,7 +131,7 @@ export function KokoroStudio({
     }
   }, [selectedProject]);
 
-  // Load drafts when project changes
+  // Load saved project audio when project changes
   useEffect(() => {
     if (
       !authLoading &&
@@ -288,16 +282,6 @@ export function KokoroStudio({
         setAudioUrl(playableUrl);
         setSuccess("Audio generated successfully!");
 
-        // Auto-save to drafts
-        await apiClient.saveDraft(
-          selectedProject,
-          text,
-          voice,
-          speed,
-          pitch,
-          generation.id,
-        );
-
         await loadGenerations();
       } else {
         // Standalone mode - generate without project
@@ -314,38 +298,13 @@ export function KokoroStudio({
           generation.audio_url || generation.audio_file_path || "",
         );
         setAudioUrl(playableUrl);
-        setSuccess("Audio generated successfully! (Not saved to any project)");
+        setSuccess("Audio generated successfully and saved to generation history!");
       }
     } catch (err: any) {
       setError(err?.detail || "Failed to generate audio");
       console.error(err);
     } finally {
       setIsGenerating(false);
-    }
-  };
-
-  const handleSaveDraft = async () => {
-    if (!selectedProject || selectedProject === STANDALONE_PROJECT_ID) {
-      setError("Please select a project to save drafts");
-      return;
-    }
-
-    if (!text.trim()) {
-      setError("Please enter text to save");
-      return;
-    }
-
-    setIsSaving(true);
-    setError(null);
-
-    try {
-      await apiClient.saveDraft(selectedProject, text, voice, speed, pitch);
-
-      setSuccess("Draft saved successfully!");
-    } catch (err: any) {
-      setError(err?.detail || "Failed to save draft");
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -360,8 +319,6 @@ export function KokoroStudio({
     );
 
     if (currentGeneration?.id === generation.id) {
-      audioRef.current?.pause();
-      setIsPlaying(false);
       setAudioUrl(null);
       setCurrentGeneration(null);
     }
@@ -376,17 +333,6 @@ export function KokoroStudio({
     }
 
     setSuccess("Loaded generation script into the editor.");
-  };
-
-  const handlePlayPause = () => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.pause();
-      } else {
-        audioRef.current.play();
-      }
-      setIsPlaying(!isPlaying);
-    }
   };
 
   const handleDownload = async () => {
@@ -441,9 +387,9 @@ export function KokoroStudio({
             <Sparkles className="w-6 h-6 text-primary" />
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-foreground">
-                Kokoro Studio
+                Resonator
               </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground sm:text-xs">
                 AI Text-to-Speech Generation
               </p>
             </div>
@@ -543,8 +489,8 @@ export function KokoroStudio({
                     </Select>
                     {!isProjectMode && (
                       <p className="mt-2 text-xs text-muted-foreground">
-                        Audio generated here stays standalone and is not added
-                        to project history.
+                        Audio generated here stays outside project workspaces,
+                        but it is still saved to your generation history.
                       </p>
                     )}
                   </CardContent>
@@ -604,32 +550,7 @@ export function KokoroStudio({
                       />
                       <div className="p-3 bg-secondary/20 flex items-center justify-between border-t border-border/50 gap-2">
                         <Button
-                          variant="outline"
-                          onClick={handleSaveDraft}
-                          disabled={
-                            isSaving ||
-                            !text.trim() ||
-                            !selectedProject ||
-                            selectedProject === STANDALONE_PROJECT_ID
-                          }
-                          size="sm"
-                          className="h-8 text-xs gap-1"
-                          title={
-                            !selectedProject ||
-                            selectedProject === STANDALONE_PROJECT_ID
-                              ? "Select a project to save drafts"
-                              : "Save as draft"
-                          }
-                        >
-                          {isSaving ? (
-                            <Loader className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Save className="w-3 h-3" />
-                          )}
-                          Draft
-                        </Button>
-                        <Button
-                          className="bg-primary hover:bg-primary/90 text-primary-foreground flex-1 h-8 text-xs gap-1"
+                          className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 w-full text-xs gap-1"
                           onClick={handleGenerate}
                           disabled={
                             isGenerating || !text.trim() || isLoadingVoices
@@ -651,69 +572,14 @@ export function KokoroStudio({
                     </CardContent>
                   </Card>
 
-                  {/* Audio Playback */}
+                  {/* Audio Playback — Waveform Player */}
                   {audioUrl && (
-                    <Card className="border-border/50 shadow-sm">
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-sm">
-                          Generated Audio
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        <audio
-                          ref={audioRef}
-                          src={audioUrl}
-                          onEnded={() => setIsPlaying(false)}
-                          className="w-full"
-                        />
-
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2 flex-1 h-9"
-                            onClick={handlePlayPause}
-                          >
-                            {isPlaying ? (
-                              <>
-                                <Pause className="w-4 h-4" />
-                                Pause
-                              </>
-                            ) : (
-                              <>
-                                <Play className="w-4 h-4" />
-                                Play
-                              </>
-                            )}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-2 h-9"
-                            onClick={handleDownload}
-                          >
-                            <Download className="w-4 h-4" />
-                            Download
-                          </Button>
-                        </div>
-
-                        {currentGeneration && (
-                          <div className="text-xs space-y-1 p-2 bg-secondary/30 rounded">
-                            <p>
-                              <span className="text-muted-foreground">
-                                Duration:
-                              </span>{" "}
-                              {currentGeneration.duration_seconds.toFixed(2)}s
-                            </p>
-                            <p>
-                              <span className="text-muted-foreground">
-                                Voice:
-                              </span>{" "}
-                              {voiceDisplayName}
-                            </p>
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
+                    <AudioWaveformPlayer
+                      audioUrl={audioUrl}
+                      voiceName={voiceDisplayName}
+                      durationSeconds={currentGeneration?.duration_seconds}
+                      onDownload={handleDownload}
+                    />
                   )}
 
                   {isProjectMode && (

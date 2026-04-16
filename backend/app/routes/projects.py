@@ -9,7 +9,7 @@ import logging
 from urllib.parse import quote
 import uuid
 
-from app.services.project_service import ProjectService
+from app.services.project_service import ProjectService, STANDALONE_PROJECT_NAME
 from app.services.tts_service import TTSService
 from database.models import Project, Generation, ProjectFolder, AudioCollection, AudioTag, ProjectShare, GenerationDraft
 from database.database import get_db
@@ -54,6 +54,7 @@ def build_generation_response(
     file_format: str = "wav",
     title: str | None = None,
     folder_id: str | None = None,
+    project_name: str | None = None,
 ) -> "GenerationResponse":
     normalized_id = serialize_uuid(generation_id)
     normalized_user_id = serialize_uuid(user_id)
@@ -74,6 +75,7 @@ def build_generation_response(
         audio_url=audio_url,
         title=title,
         folder_id=folder_id,
+        project_name=project_name,
         duration_seconds=duration_seconds,
         created_at=created_at,
         updated_at=created_at,
@@ -84,6 +86,43 @@ def build_generation_audio_url(audio_path: str | None) -> str | None:
     if not audio_path:
         return None
     return f"/api/audio/proxy?path={quote(audio_path, safe='')}"
+
+
+def get_generation_project_name(project: Project | None) -> str | None:
+    if project is None:
+        return None
+    if getattr(project, "is_system", False):
+        return STANDALONE_PROJECT_NAME
+    return project.name
+
+
+def create_generation_record(
+    db: Session,
+    *,
+    project_id: str | uuid.UUID,
+    user_id: str | uuid.UUID,
+    text: str,
+    voice_id: str,
+    speed: float,
+    pitch: float,
+    duration_seconds: float,
+    audio_path: str,
+) -> Generation:
+    generation = Generation(
+        project_id=parse_uuid(project_id),
+        user_id=parse_uuid(user_id),
+        voice_id=voice_id,
+        text_prompt=text,
+        speed=speed,
+        pitch=pitch,
+        duration_seconds=duration_seconds,
+        audio_path=audio_path,
+        file_format="wav",
+    )
+    db.add(generation)
+    db.commit()
+    db.refresh(generation)
+    return generation
 
 
 def serialize_generation(generation: Generation) -> "GenerationResponse":
@@ -100,6 +139,7 @@ def serialize_generation(generation: Generation) -> "GenerationResponse":
         file_format=generation.file_format,
         title=generation.title,
         folder_id=serialize_uuid(generation.folder_id),
+        project_name=get_generation_project_name(generation.project),
     )
 
 # ==================== PYDANTIC MODELS ====================
@@ -260,6 +300,7 @@ class GenerationRequest(BaseModel):
 class GenerationResponse(BaseModel):
     id: str
     project_id: Optional[str] = None
+    project_name: Optional[str] = None
     user_id: str
     text: str
     text_prompt: str
@@ -901,13 +942,17 @@ def generate_audio_standalone(
     db: Session = Depends(get_db)
 ):
     """
-    Generate audio without saving to a project.
+    Generate audio without requiring a visible user project.
     
-    This endpoint synthesizes text into audio without requiring or storing to a project.
-    Useful for quick one-off generations.
+    This endpoint synthesizes text into audio and stores it in the user's hidden
+    standalone workspace so it appears in generation history.
     """
     try:
         logger.info(f"Generating standalone audio for user {current_user}")
+        standalone_project = ProjectService.get_or_create_standalone_project(
+            db,
+            current_user,
+        )
         
         # Generate audio using TTS service
         audio_path, duration, audio_url = TTSService.generate_audio(
@@ -917,19 +962,31 @@ def generate_audio_standalone(
             pitch=payload.pitch,
             project_id=None,
         )
-        
-        # Return generation response without saving to database
-        response = build_generation_response(
-            generation_id=uuid.uuid4(),
-            project_id=None,
+
+        generation = create_generation_record(
+            db,
+            project_id=standalone_project.id,
             user_id=current_user,
             text=payload.text,
             voice_id=payload.voice_id,
-            audio_path=audio_path,
-            audio_url=audio_url,
+            speed=payload.speed,
+            pitch=payload.pitch,
             duration_seconds=duration,
-            created_at=datetime.utcnow(),
-            file_format="wav",
+            audio_path=audio_path,
+        )
+
+        response = build_generation_response(
+            generation_id=generation.id,
+            project_id=generation.project_id,
+            user_id=generation.user_id,
+            project_name=STANDALONE_PROJECT_NAME,
+            text=payload.text,
+            voice_id=payload.voice_id,
+            audio_path=generation.audio_path,
+            audio_url=audio_url,
+            duration_seconds=generation.duration_seconds,
+            created_at=generation.created_at,
+            file_format=generation.file_format,
             title=payload.title,
             folder_id=payload.folder_id,
         )
@@ -979,26 +1036,23 @@ def generate_audio(
             project_id=project_id,
         )
         
-        # Create generation record in database
-        generation = Generation(
-            project_id=parse_uuid(project_id),
-            user_id=parse_uuid(current_user),
+        generation = create_generation_record(
+            db,
+            project_id=project_id,
+            user_id=current_user,
+            text=payload.text,
             voice_id=payload.voice_id,
-            text_prompt=payload.text,
             speed=payload.speed,
             pitch=payload.pitch,
             duration_seconds=duration,
             audio_path=audio_path,
-            file_format="wav",
         )
-        db.add(generation)
-        db.commit()
-        db.refresh(generation)
 
         response = build_generation_response(
             generation_id=generation.id,
             project_id=generation.project_id,
             user_id=generation.user_id,
+            project_name=project.name,
             text=payload.text,
             voice_id=payload.voice_id,
             audio_path=generation.audio_path,

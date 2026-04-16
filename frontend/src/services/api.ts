@@ -46,6 +46,7 @@ export interface DraftResponse {
 export interface GenerationResponse {
   id: string;
   project_id: string | null;
+  project_name?: string | null;
   user_id: string;
   text: string;
   text_prompt: string;
@@ -156,8 +157,34 @@ type RawGenerationResponse = Partial<GenerationResponse> & {
   user_id: string;
 };
 
+function normalizeApiDate(value?: string | null): string {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue) {
+    return new Date().toISOString();
+  }
+
+  if (
+    /[zZ]$/.test(trimmedValue) ||
+    /[+-]\d{2}:\d{2}$/.test(trimmedValue) ||
+    !trimmedValue.includes("T")
+  ) {
+    return trimmedValue;
+  }
+
+  return `${trimmedValue}Z`;
+}
+
+function normalizeProjectResponse(project: ProjectSummary): ProjectSummary {
+  return {
+    ...project,
+    created_at: normalizeApiDate(project.created_at),
+    updated_at: normalizeApiDate(project.updated_at),
+  };
+}
+
 function normalizeDraftResponse(draft: RawDraftResponse): DraftResponse {
-  const createdAt = draft.created_at || draft.saved_at;
+  const createdAt = normalizeApiDate(draft.created_at || draft.saved_at);
 
   return {
     ...draft,
@@ -175,7 +202,7 @@ function normalizeGenerationResponse(
 ): GenerationResponse {
   const textPrompt = response.text_prompt || response.text || "";
   const audioPath = response.audio_file_path || response.audio_path || null;
-  const createdAt = response.created_at || new Date().toISOString();
+  const createdAt = normalizeApiDate(response.created_at);
 
   return {
     id: response.id,
@@ -189,10 +216,11 @@ function normalizeGenerationResponse(
     audio_url: response.audio_url || null,
     title: response.title || null,
     folder_id: response.folder_id || null,
+    project_name: response.project_name || null,
     file_format: response.file_format || "wav",
     duration_seconds: response.duration_seconds || 0,
     created_at: createdAt,
-    updated_at: response.updated_at || createdAt,
+    updated_at: normalizeApiDate(response.updated_at || createdAt),
   };
 }
 
@@ -424,7 +452,10 @@ class ApiClient {
       method: "GET",
     });
 
-    return Array.isArray(response) ? response : response.projects || [];
+    const projects = Array.isArray(response)
+      ? response
+      : response.projects || [];
+    return projects.map(normalizeProjectResponse);
   }
 
   /**
@@ -438,9 +469,13 @@ class ApiClient {
     created_at: string;
     updated_at: string;
   }> {
-    return this.request(`/api/projects/${projectId}`, {
-      method: "GET",
-    });
+    const project = await this.request<ProjectSummary>(
+      `/api/projects/${projectId}`,
+      {
+        method: "GET",
+      },
+    );
+    return normalizeProjectResponse(project);
   }
 
   /**
@@ -457,10 +492,11 @@ class ApiClient {
     created_at: string;
     updated_at: string;
   }> {
-    return this.request("/api/projects/", {
+    const project = await this.request<ProjectSummary>("/api/projects/", {
       method: "POST",
       body: JSON.stringify({ name, description }),
     });
+    return normalizeProjectResponse(project);
   }
 
   /**
@@ -478,10 +514,14 @@ class ApiClient {
     created_at: string;
     updated_at: string;
   }> {
-    return this.request(`/api/projects/${projectId}`, {
-      method: "PUT",
-      body: JSON.stringify({ name, description }),
-    });
+    const project = await this.request<ProjectSummary>(
+      `/api/projects/${projectId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ name, description }),
+      },
+    );
+    return normalizeProjectResponse(project);
   }
 
   /**
@@ -991,10 +1031,9 @@ class ApiClient {
 
     return {
       ...response,
-      generations: response.generations.map((generation) => ({
-        ...normalizeGenerationResponse(generation),
-        project_name: null,
-      })),
+      generations: response.generations.map((generation) =>
+        normalizeGenerationResponse(generation),
+      ),
     };
   }
 }

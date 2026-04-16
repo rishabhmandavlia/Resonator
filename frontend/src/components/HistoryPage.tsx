@@ -179,10 +179,10 @@ export function HistoryPage() {
       history.map((generation) => ({
         ...generation,
         project_name:
+          generation.project_name ||
           projects.find((project) => project.id === generation.project_id)
             ?.name ||
-          generation.project_name ||
-          "Unknown Project",
+          "Quick Generate",
       })),
     [history, projects],
   );
@@ -190,304 +190,310 @@ export function HistoryPage() {
   const totalPages = Math.ceil(totalCount / pageSize);
 
   return (
-    <div className="min-h-[calc(100vh-3rem)] m-6 rounded-3xl overflow-hidden border border-border/50 bg-white shadow-sm">
-      <div className="h-full space-y-8 overflow-y-auto p-6 md:p-8 lg:p-10">
-        <div className="flex flex-col space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-                Generation History
-              </h1>
-              <p className="mt-2 text-lg text-muted-foreground">
-                Browse every saved voice generation across your projects.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Search and Filter Bar */}
-        <div className="space-y-4">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Search by text prompt..."
-                value={filters.searchText}
-                onChange={(e) => {
-                  setPage(0);
-                  setFilters((prev) => ({
-                    ...prev,
-                    searchText: e.target.value,
-                  }));
-                }}
-                className="pl-10"
-              />
-            </div>
-            <Button
-              variant={showFilters ? "default" : "outline"}
-              size="sm"
-              onClick={() => setShowFilters(!showFilters)}
-              className="gap-2"
-            >
-              <Filter className="h-4 w-4" />
-              Filters
-              {hasActiveFilters && (
-                <Badge variant="secondary" className="ml-1">
-                  {activeFilterCount}
-                </Badge>
-              )}
-            </Button>
-            <Badge variant="secondary" className="text-sm">
-              {totalCount} generations
-            </Badge>
-          </div>
-
-          {/* Advanced Filters */}
-          {showFilters && (
-            <div className="space-y-4 rounded-lg border border-border/30 bg-muted/30 p-4">
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {/* Project Filter */}
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    Project
-                  </label>
-                  <Select
-                    value={filters.projectId || ALL_PROJECTS_VALUE}
-                    onValueChange={(value: string) => {
-                      setPage(0);
-                      setFilters((prev) => ({
-                        ...prev,
-                        projectId: value === ALL_PROJECTS_VALUE ? null : value,
-                      }));
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="All projects" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ALL_PROJECTS_VALUE}>
-                        All projects
-                      </SelectItem>
-                      {projects.map((project) => (
-                        <SelectItem key={project.id} value={project.id}>
-                          {project.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Voice Filter */}
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    Voice
-                  </label>
-                  <Select
-                    value={filters.voiceId || ALL_VOICES_VALUE}
-                    onValueChange={(value: string) => {
-                      setPage(0);
-                      setFilters((prev) => ({
-                        ...prev,
-                        voiceId: value === ALL_VOICES_VALUE ? null : value,
-                      }));
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="All voices" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ALL_VOICES_VALUE}>
-                        All voices
-                      </SelectItem>
-                      {voices.map((voice) => (
-                        <SelectItem key={voice.id} value={voice.id}>
-                          {voice.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Sort By */}
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    Sort By
-                  </label>
-                  <Select
-                    value={filters.sortBy}
-                    onValueChange={(value: string) => {
-                      setPage(0);
-                      setFilters((prev) => ({
-                        ...prev,
-                        sortBy: value,
-                      }));
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="created_at">Date Created</SelectItem>
-                      <SelectItem value="duration_seconds">Duration</SelectItem>
-                      <SelectItem value="text_prompt">Text</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Date From */}
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    From Date
-                  </label>
-                  <Input
-                    type="date"
-                    value={filters.dateFrom || ""}
-                    onChange={(e) => {
-                      setPage(0);
-                      setFilters((prev) => ({
-                        ...prev,
-                        dateFrom: e.target.value || null,
-                      }));
-                    }}
-                  />
-                </div>
-
-                {/* Date To */}
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    To Date
-                  </label>
-                  <Input
-                    type="date"
-                    value={filters.dateTo || ""}
-                    onChange={(e) => {
-                      setPage(0);
-                      setFilters((prev) => ({
-                        ...prev,
-                        dateTo: e.target.value || null,
-                      }));
-                    }}
-                  />
-                </div>
-
-                {/* Duration Range */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">
-                    Min Duration (sec)
-                  </label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    placeholder="0"
-                    value={filters.minDuration ?? ""}
-                    onChange={(e) => {
-                      setPage(0);
-                      const value =
-                        e.target.value === ""
-                          ? null
-                          : Math.max(0, parseFloat(e.target.value));
-                      setFilters((prev) => ({
-                        ...prev,
-                        minDuration: value,
-                      }));
-                    }}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">
-                    Max Duration (sec)
-                  </label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    placeholder="No limit"
-                    value={filters.maxDuration ?? ""}
-                    onChange={(e) => {
-                      setPage(0);
-                      const value =
-                        e.target.value === ""
-                          ? null
-                          : Math.max(0, parseFloat(e.target.value));
-                      setFilters((prev) => ({
-                        ...prev,
-                        maxDuration: value,
-                      }));
-                    }}
-                  />
-                </div>
+    <div className="h-full p-6">
+      <div className="flex h-full min-h-0 flex-col rounded-3xl border border-border/50 bg-white shadow-sm">
+        <div className="flex-1 min-h-0 space-y-8 overflow-y-auto p-6 md:p-8 lg:p-10">
+          <div className="flex flex-col space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+                  Generation History
+                </h1>
+                <p className="mt-2 text-lg text-muted-foreground">
+                  Browse every saved voice generation across your projects and
+                  quick generations.
+                </p>
               </div>
+            </div>
+          </div>
 
-              {hasActiveFilters && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleResetFilters}
-                  className="gap-2"
-                >
-                  <X className="h-4 w-4" />
-                  Clear Filters
-                </Button>
-              )}
+          {/* Search and Filter Bar */}
+          <div className="space-y-4">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Search by text prompt..."
+                  value={filters.searchText}
+                  onChange={(e) => {
+                    setPage(0);
+                    setFilters((prev) => ({
+                      ...prev,
+                      searchText: e.target.value,
+                    }));
+                  }}
+                  className="pl-10"
+                />
+              </div>
+              <Button
+                variant={showFilters ? "default" : "outline"}
+                size="sm"
+                onClick={() => setShowFilters(!showFilters)}
+                className="gap-2"
+              >
+                <Filter className="h-4 w-4" />
+                Filters
+                {hasActiveFilters && (
+                  <Badge variant="secondary" className="ml-1">
+                    {activeFilterCount}
+                  </Badge>
+                )}
+              </Button>
+              <Badge variant="secondary" className="text-sm">
+                {totalCount} generations
+              </Badge>
+            </div>
+
+            {/* Advanced Filters */}
+            {showFilters && (
+              <div className="space-y-4 rounded-lg border border-border/30 bg-muted/30 p-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {/* Project Filter */}
+                  <div>
+                    <label className="text-sm font-medium text-foreground">
+                      Project
+                    </label>
+                    <Select
+                      value={filters.projectId || ALL_PROJECTS_VALUE}
+                      onValueChange={(value: string) => {
+                        setPage(0);
+                        setFilters((prev) => ({
+                          ...prev,
+                          projectId:
+                            value === ALL_PROJECTS_VALUE ? null : value,
+                        }));
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="All projects" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ALL_PROJECTS_VALUE}>
+                          All projects
+                        </SelectItem>
+                        {projects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            {project.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Voice Filter */}
+                  <div>
+                    <label className="text-sm font-medium text-foreground">
+                      Voice
+                    </label>
+                    <Select
+                      value={filters.voiceId || ALL_VOICES_VALUE}
+                      onValueChange={(value: string) => {
+                        setPage(0);
+                        setFilters((prev) => ({
+                          ...prev,
+                          voiceId: value === ALL_VOICES_VALUE ? null : value,
+                        }));
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="All voices" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ALL_VOICES_VALUE}>
+                          All voices
+                        </SelectItem>
+                        {voices.map((voice) => (
+                          <SelectItem key={voice.id} value={voice.id}>
+                            {voice.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Sort By */}
+                  <div>
+                    <label className="text-sm font-medium text-foreground">
+                      Sort By
+                    </label>
+                    <Select
+                      value={filters.sortBy}
+                      onValueChange={(value: string) => {
+                        setPage(0);
+                        setFilters((prev) => ({
+                          ...prev,
+                          sortBy: value,
+                        }));
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="created_at">Date Created</SelectItem>
+                        <SelectItem value="duration_seconds">
+                          Duration
+                        </SelectItem>
+                        <SelectItem value="text_prompt">Text</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Date From */}
+                  <div>
+                    <label className="text-sm font-medium text-foreground">
+                      From Date
+                    </label>
+                    <Input
+                      type="date"
+                      value={filters.dateFrom || ""}
+                      onChange={(e) => {
+                        setPage(0);
+                        setFilters((prev) => ({
+                          ...prev,
+                          dateFrom: e.target.value || null,
+                        }));
+                      }}
+                    />
+                  </div>
+
+                  {/* Date To */}
+                  <div>
+                    <label className="text-sm font-medium text-foreground">
+                      To Date
+                    </label>
+                    <Input
+                      type="date"
+                      value={filters.dateTo || ""}
+                      onChange={(e) => {
+                        setPage(0);
+                        setFilters((prev) => ({
+                          ...prev,
+                          dateTo: e.target.value || null,
+                        }));
+                      }}
+                    />
+                  </div>
+
+                  {/* Duration Range */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">
+                      Min Duration (sec)
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      placeholder="0"
+                      value={filters.minDuration ?? ""}
+                      onChange={(e) => {
+                        setPage(0);
+                        const value =
+                          e.target.value === ""
+                            ? null
+                            : Math.max(0, parseFloat(e.target.value));
+                        setFilters((prev) => ({
+                          ...prev,
+                          minDuration: value,
+                        }));
+                      }}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">
+                      Max Duration (sec)
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      placeholder="No limit"
+                      value={filters.maxDuration ?? ""}
+                      onChange={(e) => {
+                        setPage(0);
+                        const value =
+                          e.target.value === ""
+                            ? null
+                            : Math.max(0, parseFloat(e.target.value));
+                        setFilters((prev) => ({
+                          ...prev,
+                          maxDuration: value,
+                        }));
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {hasActiveFilters && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleResetFilters}
+                    className="gap-2"
+                  >
+                    <X className="h-4 w-4" />
+                    Clear Filters
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <Alert className="border border-red-200 bg-red-50">
+              <AlertCircle className="h-4 w-4 text-red-600" />
+              <AlertDescription className="ml-2 text-red-800">
+                {error}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <AudioLibrary
+            items={itemsWithProjectNames}
+            voices={voices}
+            isLoading={isLoading}
+            title="Filtered Generations"
+            description="Play, inspect, download, or delete any saved audio clip."
+            emptyTitle={
+              totalCount === 0
+                ? "No generations found"
+                : "No generations on this page"
+            }
+            emptyDescription={
+              totalCount === 0
+                ? hasActiveFilters
+                  ? "Try adjusting your filters to find generations."
+                  : "Generate audio inside a project and it will appear here."
+                : ""
+            }
+            showProjectName
+            onDelete={handleDeleteGeneration}
+          />
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-4">
+              <Button
+                variant="outline"
+                disabled={page === 0 || isLoading}
+                onClick={() => setPage(Math.max(0, page - 1))}
+              >
+                Previous
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                Page {page + 1} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                disabled={page >= totalPages - 1 || isLoading}
+                onClick={() => setPage(page + 1)}
+              >
+                Next
+              </Button>
             </div>
           )}
         </div>
-
-        {error && (
-          <Alert className="border border-red-200 bg-red-50">
-            <AlertCircle className="h-4 w-4 text-red-600" />
-            <AlertDescription className="ml-2 text-red-800">
-              {error}
-            </AlertDescription>
-          </Alert>
-        )}
-
-        <AudioLibrary
-          items={itemsWithProjectNames}
-          voices={voices}
-          isLoading={isLoading}
-          title="Filtered Generations"
-          description="Play, inspect, download, or delete any saved audio clip."
-          emptyTitle={
-            totalCount === 0
-              ? "No generations found"
-              : "No generations on this page"
-          }
-          emptyDescription={
-            totalCount === 0
-              ? hasActiveFilters
-                ? "Try adjusting your filters to find generations."
-                : "Generate audio inside a project and it will appear here."
-              : ""
-          }
-          showProjectName
-          onDelete={handleDeleteGeneration}
-        />
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-center gap-4">
-            <Button
-              variant="outline"
-              disabled={page === 0 || isLoading}
-              onClick={() => setPage(Math.max(0, page - 1))}
-            >
-              Previous
-            </Button>
-            <span className="text-sm text-muted-foreground">
-              Page {page + 1} of {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              disabled={page >= totalPages - 1 || isLoading}
-              onClick={() => setPage(page + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        )}
       </div>
     </div>
   );

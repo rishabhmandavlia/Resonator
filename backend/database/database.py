@@ -358,6 +358,7 @@ def repair_schema() -> None:
 
         repair_voice_id_column("generation_drafts")
         repair_voice_id_column("generations")
+        ensure_boolean_column("projects", "is_system", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "is_email_verified", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "has_email_auth", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("oauth_identities", "email_verified", "FALSE" if engine.dialect.name == "postgresql" else "0")
