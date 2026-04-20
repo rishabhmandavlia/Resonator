@@ -4,17 +4,9 @@ import { KokoroStudio } from "./KokoroStudio";
 import { Projects } from "./Projects";
 import { HistoryPage } from "./HistoryPage";
 import { RemoteStorage } from "./RemoteStorage";
+import { SettingsPage } from "./SettingsPage";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAuth } from "../services/auth";
-
-const Settings = () => (
-  <div className="p-6">
-    <h1 className="text-3xl mb-4">Settings</h1>
-    <p className="text-muted-foreground">
-      System preferences and Kokoro API configurations coming soon...
-    </p>
-  </div>
-);
 
 export function Layout() {
   const [currentPage, setCurrentPage] = useState("studio");
@@ -31,7 +23,7 @@ export function Layout() {
       case "storage":
         return <RemoteStorage />;
       case "settings":
-        return <Settings />;
+        return <SettingsPage />;
       default:
         return <KokoroStudio forceStandalone />;
     }

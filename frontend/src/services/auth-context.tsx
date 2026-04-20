@@ -13,6 +13,7 @@ import React, {
 
 import {
   apiClient,
+  type ApiError,
   type AuthProviderOption,
   type ConnectedProviderSummary,
   type AuthSessionResponse,
@@ -75,6 +76,42 @@ function applySessionState(
   setActiveAccountId(session.activeAccountId);
 }
 
+function getPreferredActiveAccountId(
+  accounts: SessionAccountSummary[],
+  preferredAccountId: string | null,
+): string | null {
+  if (
+    preferredAccountId &&
+    accounts.some((account) => account.accountId === preferredAccountId)
+  ) {
+    return preferredAccountId;
+  }
+
+  const preferredAccount =
+    accounts.find((account) => account.isValid) || accounts[0] || null;
+
+  return preferredAccount?.accountId || null;
+}
+
+function isNetworkRequestFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const apiError = error as ApiError;
+  if (typeof apiError.status === "number") {
+    return false;
+  }
+
+  const message = apiError.detail || apiError.message || apiError.error || "";
+
+  return (
+    error instanceof TypeError ||
+    error instanceof DOMException ||
+    /failed to fetch|load failed|networkerror/i.test(message)
+  );
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accounts, setAccounts] = useState<SessionAccountSummary[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
@@ -108,6 +145,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loadProviders = async () => {
     const response = await apiClient.getAuthProviders();
     setProviders(response.providers);
+  };
+
+  const clearSessionState = () => {
+    applySessionState(
+      { accounts: [], activeAccountId: null },
+      setAccounts,
+      setActiveAccountId,
+    );
+  };
+
+  const removeAccountFromLocalState = (accountId: string) => {
+    setAccounts((currentAccounts) => {
+      const remainingAccounts = currentAccounts.filter(
+        (account) => account.accountId !== accountId,
+      );
+
+      setActiveAccountId((currentActiveAccountId) =>
+        getPreferredActiveAccountId(
+          remainingAccounts,
+          currentActiveAccountId === accountId ? null : currentActiveAccountId,
+        ),
+      );
+
+      return remainingAccounts;
+    });
   };
 
   const refreshSession = async () => {
@@ -281,6 +343,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const session = await apiClient.removeAccount(accountId);
       applySessionState(session, setAccounts, setActiveAccountId);
     } catch (err: any) {
+      if (isNetworkRequestFailure(err)) {
+        removeAccountFromLocalState(accountId);
+        return;
+      }
+
       const errorMessage =
         err?.detail || err?.message || "Failed to remove account";
       setError(errorMessage);
@@ -307,11 +374,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const session = await apiClient.logoutAll();
       applySessionState(session, setAccounts, setActiveAccountId);
-      await loadProviders();
     } catch (err: any) {
+      if (isNetworkRequestFailure(err)) {
+        clearSessionState();
+        return;
+      }
+
       const errorMessage = err?.detail || err?.message || "Failed to log out";
       setError(errorMessage);
       throw err;
+    }
+
+    try {
+      await loadProviders();
+    } catch (err) {
+      console.error("Failed to refresh auth providers after logout", err);
     }
   };
 

@@ -123,11 +123,18 @@ export interface CurrentUserResponse {
   id: string;
   email: string;
   created_at: string;
+  updated_at: string;
   provider: string | null;
   account_id: string | null;
   display_name: string | null;
   avatar_url: string | null;
   is_valid: boolean;
+  has_email_auth: boolean;
+  is_email_verified: boolean;
+}
+
+export interface StatusResponse {
+  message: string;
 }
 
 type RawFilteredGenerationsResponse = {
@@ -221,6 +228,16 @@ function normalizeGenerationResponse(
     duration_seconds: response.duration_seconds || 0,
     created_at: createdAt,
     updated_at: normalizeApiDate(response.updated_at || createdAt),
+  };
+}
+
+function normalizeCurrentUserResponse(
+  user: CurrentUserResponse,
+): CurrentUserResponse {
+  return {
+    ...user,
+    created_at: normalizeApiDate(user.created_at),
+    updated_at: normalizeApiDate(user.updated_at),
   };
 }
 
@@ -425,8 +442,62 @@ class ApiClient {
    * Get current user
    */
   async getCurrentUser(): Promise<CurrentUserResponse> {
-    return this.request<CurrentUserResponse>("/api/auth/me", {
+    const user = await this.request<CurrentUserResponse>("/api/auth/me", {
       method: "GET",
+    });
+
+    return normalizeCurrentUserResponse(user);
+  }
+
+  async updateCurrentUserProfile(
+    displayName: string,
+  ): Promise<CurrentUserResponse> {
+    const user = await this.request<CurrentUserResponse>("/api/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify({ display_name: displayName }),
+    });
+
+    return normalizeCurrentUserResponse(user);
+  }
+
+  async changeCurrentUserEmail(
+    newEmail: string,
+    currentPassword: string,
+  ): Promise<CurrentUserResponse> {
+    const user = await this.request<CurrentUserResponse>("/api/auth/me/email", {
+      method: "POST",
+      body: JSON.stringify({
+        new_email: newEmail,
+        current_password: currentPassword,
+      }),
+    });
+
+    return normalizeCurrentUserResponse(user);
+  }
+
+  async changeCurrentUserPassword(
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<StatusResponse> {
+    return this.request<StatusResponse>("/api/auth/me/password", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    });
+  }
+
+  async deleteCurrentUserAccount(
+    confirmation: string,
+    currentPassword?: string,
+  ): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>("/api/auth/me", {
+      method: "DELETE",
+      body: JSON.stringify({
+        confirmation,
+        current_password: currentPassword,
+      }),
     });
   }
 

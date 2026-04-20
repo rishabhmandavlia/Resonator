@@ -152,11 +152,15 @@ export function Login() {
                 />
               </div>
               <div className="min-w-0">
-                <div className="inline-flex rounded-xl bg-emerald-700 px-3 py-2 shadow-sm">
+                <div className="inline-flex py-2">
                   <img
                     src={resonatorWordmark}
                     alt="Resonator"
                     className="h-8 w-auto max-w-[11rem]"
+                    style={{
+                      filter:
+                        "brightness(0) saturate(100%) invert(31%) sepia(67%) saturate(908%) hue-rotate(129deg) brightness(94%) contrast(97%)",
+                    }}
                   />
                 </div>
                 <p className="mt-1 text-xs uppercase tracking-[0.24em] text-slate-600">

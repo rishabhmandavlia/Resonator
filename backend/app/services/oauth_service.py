@@ -1036,6 +1036,144 @@ class OAuthService:
         return session, existing_account
 
     @staticmethod
+    def sync_local_email_session_accounts(db: Session, user: User) -> None:
+        provider_subject = (user.email or str(user.id)).strip().lower()
+        local_accounts = (
+            db.query(SessionAccount)
+            .filter(
+                SessionAccount.user_id == user.id,
+                SessionAccount.provider == LOCAL_EMAIL_PROVIDER,
+            )
+            .all()
+        )
+
+        for account in local_accounts:
+            account.email = user.email
+            account.display_name = user.username
+            account.provider_subject = provider_subject
+            account.updated_at = _utcnow()
+            account.last_used_at = _utcnow()
+
+        db.flush()
+
+    @staticmethod
+    def _finalize_session_after_account_removal(
+        db: Session,
+        session: AuthSession,
+        removed_account_ids: set[uuid.UUID],
+    ) -> bool:
+        previous_active_account_id = session.active_account_id
+        was_active = (
+            previous_active_account_id in removed_account_ids
+            if previous_active_account_id is not None
+            else False
+        )
+
+        remaining_accounts = (
+            db.query(SessionAccount)
+            .filter(SessionAccount.session_id == session.id)
+            .order_by(SessionAccount.updated_at.desc())
+            .all()
+        )
+
+        if not remaining_accounts:
+            db.delete(session)
+            db.flush()
+            return True
+
+        if not was_active and previous_active_account_id is not None:
+            active_account_still_present = next(
+                (
+                    item
+                    for item in remaining_accounts
+                    if item.id == previous_active_account_id
+                ),
+                None,
+            )
+            session.active_account_id = (
+                active_account_still_present.id
+                if active_account_still_present is not None
+                else None
+            )
+        else:
+            session.active_account_id = None
+
+        if session.active_account_id is None:
+            preferred_account = next(
+                (item for item in remaining_accounts if item.is_valid),
+                remaining_accounts[0],
+            )
+            session.active_account_id = preferred_account.id
+
+        session.updated_at = _utcnow()
+        session.last_seen_at = _utcnow()
+        db.flush()
+        return False
+
+    @staticmethod
+    def remove_user_from_all_sessions(
+        db: Session,
+        user_id: str | uuid.UUID,
+        current_session_id: str | uuid.UUID | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        user_uuid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        current_session_uuid = (
+            current_session_id
+            if isinstance(current_session_id, uuid.UUID)
+            else uuid.UUID(str(current_session_id))
+            if current_session_id is not None
+            else None
+        )
+
+        sessions = (
+            db.query(AuthSession)
+            .join(SessionAccount, SessionAccount.session_id == AuthSession.id)
+            .filter(SessionAccount.user_id == user_uuid)
+            .all()
+        )
+
+        active_current_session: AuthSession | None = None
+        cleared_current_session = False
+
+        for session in sessions:
+            user_accounts = (
+                db.query(SessionAccount)
+                .filter(
+                    SessionAccount.session_id == session.id,
+                    SessionAccount.user_id == user_uuid,
+                )
+                .all()
+            )
+            if not user_accounts:
+                continue
+
+            removed_account_ids = {account.id for account in user_accounts}
+            for account in user_accounts:
+                db.delete(account)
+
+            session_deleted = OAuthService._finalize_session_after_account_removal(
+                db,
+                session,
+                removed_account_ids,
+            )
+
+            if current_session_uuid is not None and session.id == current_session_uuid:
+                cleared_current_session = session_deleted
+                active_current_session = None if session_deleted else session
+
+        db.flush()
+
+        if active_current_session is not None:
+            current_session = (
+                db.query(AuthSession)
+                .filter(AuthSession.id == active_current_session.id)
+                .first()
+            )
+            return OAuthService.serialize_session(current_session), False
+
+        return OAuthService.serialize_session(None), cleared_current_session
+
+    @staticmethod
     def serialize_linked_provider(
         provider_type: str,
         session_account: SessionAccount | None,
@@ -1080,9 +1218,9 @@ class OAuthService:
             ),
         )
 
-        display_name = next(
+        display_name = user.username or next(
             (account.display_name for account in session_accounts if account.display_name),
-            user.username,
+            None,
         )
         avatar_url = next(
             (account.avatar_url for account in session_accounts if account.avatar_url),
@@ -1445,47 +1583,19 @@ class OAuthService:
             )
 
         account_ids_to_remove = {item.id for item in session_accounts}
-        previous_active_account_id = session.active_account_id
-        was_active = previous_active_account_id in account_ids_to_remove
-
-        remaining_accounts = (
-            db.query(SessionAccount)
-            .filter(
-                SessionAccount.session_id == session.id,
-                SessionAccount.user_id != account_uuid,
-            )
-            .order_by(SessionAccount.updated_at.desc())
-            .all()
-        )
 
         for account in session_accounts:
             db.delete(account)
 
-        if not remaining_accounts:
-            db.delete(session)
-            db.commit()
+        cleared_session = OAuthService._finalize_session_after_account_removal(
+            db,
+            session,
+            account_ids_to_remove,
+        )
+        db.commit()
+        if cleared_session:
             return OAuthService.serialize_session(None), True
 
-        if not was_active and previous_active_account_id is not None:
-            active_account_still_present = next(
-                (item for item in remaining_accounts if item.id == previous_active_account_id),
-                None,
-            )
-            session.active_account_id = (
-                active_account_still_present.id if active_account_still_present else None
-            )
-        else:
-            session.active_account_id = None
-
-        if session.active_account_id is None:
-            preferred_account = next(
-                (item for item in remaining_accounts if item.is_valid),
-                remaining_accounts[0],
-            )
-            session.active_account_id = preferred_account.id
-
-        session.updated_at = _utcnow()
-        db.commit()
         db.refresh(session)
         return OAuthService.serialize_session(session), False
 

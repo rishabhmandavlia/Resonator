@@ -42,6 +42,9 @@ interface FilterState {
 const ALL_PROJECTS_VALUE = "__all_projects__";
 const ALL_VOICES_VALUE = "__all_voices__";
 
+const ELEVATED_FIELD_CLASS_NAME =
+  "border-slate-200/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_10px_24px_rgba(15,23,42,0.06)] hover:border-slate-300 focus-visible:border-slate-300";
+
 export function HistoryPage() {
   const { hasValidActiveAccount } = useAuth();
   const [history, setHistory] = useState<StoredGeneration[]>([]);
@@ -211,7 +214,6 @@ export function HistoryPage() {
           <div className="space-y-4">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:gap-2">
               <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="Search by text prompt..."
                   value={filters.searchText}
@@ -222,7 +224,7 @@ export function HistoryPage() {
                       searchText: e.target.value,
                     }));
                   }}
-                  className="pl-10"
+                  className={`pl-10 ${ELEVATED_FIELD_CLASS_NAME}`}
                 />
               </div>
               <Button
@@ -246,7 +248,7 @@ export function HistoryPage() {
 
             {/* Advanced Filters */}
             {showFilters && (
-              <div className="space-y-4 rounded-lg border border-border/30 bg-muted/30 p-4">
+              <div className="space-y-4 rounded-lg border border-border/40 bg-slate-50/85 p-4">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
                   {/* Project Filter */}
                   <div>
@@ -264,7 +266,7 @@ export function HistoryPage() {
                         }));
                       }}
                     >
-                      <SelectTrigger>
+                      <SelectTrigger className={ELEVATED_FIELD_CLASS_NAME}>
                         <SelectValue placeholder="All projects" />
                       </SelectTrigger>
                       <SelectContent>
@@ -295,7 +297,7 @@ export function HistoryPage() {
                         }));
                       }}
                     >
-                      <SelectTrigger>
+                      <SelectTrigger className={ELEVATED_FIELD_CLASS_NAME}>
                         <SelectValue placeholder="All voices" />
                       </SelectTrigger>
                       <SelectContent>
@@ -326,7 +328,7 @@ export function HistoryPage() {
                         }));
                       }}
                     >
-                      <SelectTrigger>
+                      <SelectTrigger className={ELEVATED_FIELD_CLASS_NAME}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -354,6 +356,7 @@ export function HistoryPage() {
                           dateFrom: e.target.value || null,
                         }));
                       }}
+                      className={ELEVATED_FIELD_CLASS_NAME}
                     />
                   </div>
 
@@ -372,6 +375,7 @@ export function HistoryPage() {
                           dateTo: e.target.value || null,
                         }));
                       }}
+                      className={ELEVATED_FIELD_CLASS_NAME}
                     />
                   </div>
 
@@ -397,6 +401,7 @@ export function HistoryPage() {
                           minDuration: value,
                         }));
                       }}
+                      className={ELEVATED_FIELD_CLASS_NAME}
                     />
                   </div>
 
@@ -421,6 +426,7 @@ export function HistoryPage() {
                           maxDuration: value,
                         }));
                       }}
+                      className={ELEVATED_FIELD_CLASS_NAME}
                     />
                   </div>
                 </div>

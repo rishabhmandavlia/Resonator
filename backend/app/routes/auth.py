@@ -94,15 +94,68 @@ class UserResponse(BaseModel):
     id: str
     email: str
     created_at: datetime
+    updated_at: datetime
     provider: str | None = None
     account_id: str | None = None
     display_name: str | None = None
     avatar_url: str | None = None
     is_valid: bool = True
+    has_email_auth: bool = False
+    is_email_verified: bool = False
 
-    @field_serializer("created_at")
+    @field_serializer("created_at", "updated_at")
     def serialize_datetime(self, value: datetime) -> str:
         return value.isoformat()
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=255)
+
+
+class ChangeEmailRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_email: EmailStr
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
+
+
+class DeleteAccountRequest(BaseModel):
+    confirmation: str = Field(..., min_length=1)
+    current_password: str | None = None
+
+
+class StatusResponse(BaseModel):
+    message: str
+
+
+def _get_user_or_404(db: Session, user_id: str) -> User:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    return user
+
+
+def _build_user_response(user: User, request: Request) -> UserResponse:
+    active_account: SessionAccount | None = getattr(request.state, "active_account", None)
+    return UserResponse(
+        id=str(user.id),
+        email=user.email,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        provider=active_account.provider if active_account else None,
+        account_id=str(active_account.id) if active_account else None,
+        display_name=user.username,
+        avatar_url=active_account.avatar_url if active_account else None,
+        is_valid=active_account.is_valid if active_account else True,
+        has_email_auth=user.has_email_auth,
+        is_email_verified=user.is_email_verified,
+    )
 
 
 @router.get("/providers", response_model=ProviderListResponse)
@@ -376,21 +429,141 @@ async def get_current_user_info(
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> UserResponse:
-    user = db.query(User).filter(User.id == current_user).first()
-    if not user:
+    user = _get_user_or_404(db, current_user)
+    return _build_user_response(user, request)
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_current_user_profile(
+    payload: UpdateProfileRequest,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserResponse:
+    user = _get_user_or_404(db, current_user)
+    display_name = payload.display_name.strip()
+    if not display_name:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Display name is required",
         )
 
-    active_account: SessionAccount | None = getattr(request.state, "active_account", None)
-    return UserResponse(
-        id=str(user.id),
-        email=active_account.email or user.email if active_account else user.email,
-        created_at=user.created_at,
-        provider=active_account.provider if active_account else None,
-        account_id=str(active_account.id) if active_account else None,
-        display_name=active_account.display_name if active_account else user.username,
-        avatar_url=active_account.avatar_url if active_account else None,
-        is_valid=active_account.is_valid if active_account else True,
+    user.username = display_name
+    user.updated_at = datetime.utcnow()
+    OAuthService.sync_local_email_session_accounts(db, user)
+    db.commit()
+    db.refresh(user)
+    return _build_user_response(user, request)
+
+
+@router.post("/me/email", response_model=UserResponse)
+async def change_current_user_email(
+    payload: ChangeEmailRequest,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserResponse:
+    user = _get_user_or_404(db, current_user)
+    if not user.has_email_auth:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email changes are only available for email/password accounts",
+        )
+
+    if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    normalized_email = EmailAuthService.normalize_email(str(payload.new_email))
+    if normalized_email == user.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New email must be different from your current email",
+        )
+
+    existing_user = db.query(User).filter(User.email == normalized_email).first()
+    if existing_user and existing_user.id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An account with this email already exists",
+        )
+
+    user.email = normalized_email
+    user.is_email_verified = True
+    user.updated_at = datetime.utcnow()
+    OAuthService.sync_local_email_session_accounts(db, user)
+    db.commit()
+    db.refresh(user)
+    return _build_user_response(user, request)
+
+
+@router.post("/me/password", response_model=StatusResponse)
+async def change_current_user_password(
+    payload: ChangePasswordRequest,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StatusResponse:
+    user = _get_user_or_404(db, current_user)
+    if not user.has_email_auth:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password changes are only available for email/password accounts",
+        )
+
+    if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    EmailAuthService.validate_password(payload.new_password)
+    user.password_hash = EmailAuthService.hash_password(payload.new_password)
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    return StatusResponse(message="Password updated successfully")
+
+
+@router.delete("/me", response_model=AuthSessionResponse)
+async def delete_current_user_account(
+    payload: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AuthSessionResponse:
+    user = _get_user_or_404(db, current_user)
+    normalized_confirmation = EmailAuthService.normalize_email(payload.confirmation)
+    if normalized_confirmation != EmailAuthService.normalize_email(user.email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Type your current email address to confirm account deletion",
+        )
+
+    if user.has_email_auth:
+        if not payload.current_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required to delete this account",
+            )
+        if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect",
+            )
+
+    current_session = OAuthService.get_session_from_request(request, db)
+    session_payload, cleared_session = OAuthService.remove_user_from_all_sessions(
+        db,
+        user.id,
+        current_session.id if current_session is not None else None,
     )
+
+    db.delete(user)
+    db.commit()
+
+    if cleared_session:
+        OAuthService.clear_session_cookie(response)
+
+    return AuthSessionResponse(**session_payload)
