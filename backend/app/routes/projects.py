@@ -415,6 +415,7 @@ def update_project(
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(
     project_id: str,
+    delete_audio_files: bool = Query(False),
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -439,7 +440,11 @@ def delete_project(
                 detail="System projects cannot be deleted",
             )
 
-        deleted = ProjectService.delete_project(db, project_id)
+        deleted = ProjectService.delete_project(
+            db,
+            project_id,
+            delete_audio_files=delete_audio_files,
+        )
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

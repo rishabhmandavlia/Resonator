@@ -736,7 +736,6 @@ export function RemoteStorage() {
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex flex-1 flex-col gap-4 md:flex-row md:items-center">
                       <div className="relative flex-1">
-                      
                         <Input
                           value={searchQuery}
                           onChange={(event) =>
@@ -1158,7 +1157,7 @@ export function RemoteStorage() {
           }
         }}
       >
-        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-2xl">
+        <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
               Delete{" "}
@@ -1172,7 +1171,7 @@ export function RemoteStorage() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             <Alert className="border-red-200 bg-red-50 text-red-950">
               <Trash2 className="h-4 w-4" />
               <AlertTitle>Delete confirmation</AlertTitle>
@@ -1183,8 +1182,8 @@ export function RemoteStorage() {
               </AlertDescription>
             </Alert>
 
-            <ScrollArea className="max-h-[min(45vh,20rem)] rounded-2xl border border-border/60 bg-secondary/10 p-4">
-              <div className="space-y-2">
+            <ScrollArea className="h-[min(45vh,20rem)] shrink-0 overflow-hidden rounded-2xl border border-border/60 bg-secondary/10">
+              <div className="space-y-2 p-4">
                 {deleteDialogFiles.map((file) => (
                   <div
                     key={file.id}
@@ -1206,7 +1205,7 @@ export function RemoteStorage() {
             </ScrollArea>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border/60 pt-4">
             <Button
               type="button"
               variant="outline"

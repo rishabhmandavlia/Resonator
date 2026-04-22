@@ -237,7 +237,11 @@ class ProjectService:
             raise
     
     @staticmethod
-    def delete_project(db: Session, project_id: str) -> bool:
+    def delete_project(
+        db: Session,
+        project_id: str,
+        delete_audio_files: bool = False,
+    ) -> bool:
         """Delete a project and all related data."""
         try:
             logger.info(f"Deleting project: {project_id}")
@@ -249,9 +253,23 @@ class ProjectService:
             if project.is_system:
                 logger.warning("Refusing to delete system project %s", project_id)
                 return False
+
+            audio_paths: List[str] = []
+            if delete_audio_files:
+                audio_paths = [
+                    audio_path
+                    for (audio_path,) in db.query(Generation.audio_path)
+                    .filter(Generation.project_id == project.id)
+                    .all()
+                    if audio_path
+                ]
             
             db.delete(project)
             db.commit()
+
+            if delete_audio_files:
+                for audio_path in audio_paths:
+                    ProjectService._delete_generation_audio(audio_path)
             
             logger.info(f"Project {project_id} deleted successfully")
             return True

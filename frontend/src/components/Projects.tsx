@@ -3,7 +3,7 @@
  * Manage TTS projects integrated with backend API
  */
 
-import { type MouseEvent, useEffect, useState } from "react";
+import { type MouseEvent, useDeferredValue, useEffect, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
@@ -13,6 +13,7 @@ import {
   FolderKanban,
   Maximize2,
   Plus,
+  Search,
   Trash2,
 } from "lucide-react";
 
@@ -33,6 +34,7 @@ import {
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
+import { Checkbox } from "./ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -42,14 +44,24 @@ import {
   DialogTrigger,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 import { Textarea } from "./ui/textarea";
 
 type Project = ProjectSummary;
+type ProjectDateFilter = "updated-desc" | "created-desc" | "created-asc";
 
 const EMPTY_FORM = {
   name: "",
   description: "",
 };
+
+const DEFAULT_DATE_FILTER: ProjectDateFilter = "updated-desc";
 
 export function Projects() {
   const { hasValidActiveAccount, isLoading: authLoading, user } = useAuth();
@@ -68,7 +80,14 @@ export function Projects() {
     useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteProjectAudioFiles, setDeleteProjectAudioFiles] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dateFilter, setDateFilter] =
+    useState<ProjectDateFilter>(DEFAULT_DATE_FILTER);
   const [retryCount, setRetryCount] = useState(0);
+
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const normalizedProjectQuery = deferredSearchQuery.trim().toLowerCase();
 
   useEffect(() => {
     if (!authLoading && hasValidActiveAccount) {
@@ -200,6 +219,7 @@ export function Projects() {
     }
 
     setDeleteError(null);
+    setDeleteProjectAudioFiles(false);
     setProjectPendingDelete(project);
   };
 
@@ -215,7 +235,9 @@ export function Projects() {
 
     try {
       setError(null);
-      await apiClient.deleteProject(projectId);
+      await apiClient.deleteProject(projectId, {
+        deleteAudioFiles: deleteProjectAudioFiles,
+      });
 
       setProjects((current) =>
         current.filter((project) => project.id !== projectId),
@@ -230,6 +252,7 @@ export function Projects() {
       }
 
       setProjectPendingDelete(null);
+      setDeleteProjectAudioFiles(false);
       setSuccess("Project deleted successfully!");
       setTimeout(() => setSuccess(null), 2000);
     } catch (err: any) {
@@ -243,6 +266,39 @@ export function Projects() {
 
   const isOwnedProject = (project: Project | null) =>
     project !== null && project.user_id === user?.id;
+
+  const visibleProjects = [...projects]
+    .filter((project) => {
+      if (!normalizedProjectQuery) {
+        return true;
+      }
+
+      return project.name.toLowerCase().includes(normalizedProjectQuery);
+    })
+    .sort((left, right) => {
+      switch (dateFilter) {
+        case "created-desc":
+          return (
+            new Date(right.created_at).getTime() -
+            new Date(left.created_at).getTime()
+          );
+        case "created-asc":
+          return (
+            new Date(left.created_at).getTime() -
+            new Date(right.created_at).getTime()
+          );
+        case "updated-desc":
+        default:
+          return (
+            new Date(right.updated_at).getTime() -
+            new Date(left.updated_at).getTime()
+          );
+      }
+    });
+
+  const hasProjectMatches = visibleProjects.length > 0;
+  const hasProjectFilters =
+    searchQuery.trim().length > 0 || dateFilter !== DEFAULT_DATE_FILTER;
 
   const getColorForProject = (index: number) => {
     const colors = [
@@ -348,6 +404,65 @@ export function Projects() {
                 </div>
               </div>
 
+              {!isLoading && projects.length > 0 && (
+                <div className="rounded-2xl border border-border/60 bg-secondary/10 p-4 shadow-sm">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex flex-1 flex-col gap-4 md:flex-row md:items-center">
+                      <div className="relative flex-1">
+                        <Input
+                          value={searchQuery}
+                          onChange={(event) =>
+                            setSearchQuery(event.target.value)
+                          }
+                          placeholder="Search projects by name"
+                          className="pl-10"
+                        />
+                      </div>
+
+                      <Select
+                        value={dateFilter}
+                        onValueChange={(value: ProjectDateFilter) =>
+                          setDateFilter(value)
+                        }
+                      >
+                        <SelectTrigger className="w-full md:w-[220px]">
+                          <SelectValue placeholder="Sort by date" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="updated-desc">
+                            Recently updated
+                          </SelectItem>
+                          <SelectItem value="created-desc">
+                            Recently created
+                          </SelectItem>
+                          <SelectItem value="created-asc">
+                            Oldest created
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground">
+                        {visibleProjects.length} of {projects.length} projects
+                      </span>
+                      {hasProjectFilters && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSearchQuery("");
+                            setDateFilter(DEFAULT_DATE_FILTER);
+                          }}
+                        >
+                          Reset
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {success && (
                 <Alert className="border border-green-200 bg-green-50">
                   <AlertDescription className="text-green-800">
@@ -395,9 +510,29 @@ export function Projects() {
                     Create Project
                   </Button>
                 </div>
+              ) : !hasProjectMatches ? (
+                <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-200 py-12 text-center">
+                  <Search className="mb-4 h-12 w-12 text-gray-400" />
+                  <h3 className="mb-2 text-lg font-semibold text-gray-900">
+                    No projects match the current filters
+                  </h3>
+                  <p className="mb-4 max-w-xl text-gray-600">
+                    Adjust the project name search or change the date filter to
+                    surface a different workspace.
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setDateFilter(DEFAULT_DATE_FILTER);
+                    }}
+                  >
+                    Clear Filters
+                  </Button>
+                </div>
               ) : (
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {projects.map((project, index) => {
+                  {visibleProjects.map((project, index) => {
                     const isOwned = isOwnedProject(project);
 
                     return (
@@ -635,6 +770,7 @@ export function Projects() {
         onOpenChange={(open: boolean) => {
           if (!open && !isDeletingProject) {
             setProjectPendingDelete(null);
+            setDeleteProjectAudioFiles(false);
             setDeleteError(null);
           }
         }}
@@ -656,6 +792,30 @@ export function Projects() {
               </AlertDescription>
             </Alert>
           )}
+
+          <div className="rounded-2xl border border-border/60 bg-secondary/10 p-4">
+            <label
+              htmlFor="delete-project-audio-files"
+              className="flex cursor-pointer items-start gap-3"
+            >
+              <Checkbox
+                id="delete-project-audio-files"
+                checked={deleteProjectAudioFiles}
+                disabled={isDeletingProject}
+                onCheckedChange={(checked: boolean | "indeterminate") =>
+                  setDeleteProjectAudioFiles(checked === true)
+                }
+              />
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  Also delete generated audio files
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Leave this unchecked to keep the stored audio files.
+                </p>
+              </div>
+            </label>
+          </div>
 
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeletingProject}>

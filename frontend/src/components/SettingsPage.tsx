@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import {
   AlertTriangle,
   CheckCircle2,
-  Github,
   KeyRound,
   Loader2,
   Mail,
@@ -12,7 +11,11 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "../services/auth";
-import { apiClient, type CurrentUserResponse } from "../services/api";
+import {
+  apiClient,
+  type CurrentUserResponse,
+  type RegistrationChallengeResponse,
+} from "../services/api";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -32,12 +35,24 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSeparator,
+  InputOTPSlot,
+} from "./ui/input-otp";
 import { GoogleIcon } from "./ui/provider-icons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 
 type NoticeState = {
   tone: "success" | "error";
   message: string;
+};
+
+type ProviderActionDialogState = {
+  mode: "connect" | "unlink";
+  providerId: string;
+  providerLabel: string;
 };
 
 const EMPTY_PROFILE_FORM = {
@@ -75,11 +90,26 @@ function formatAccountDate(value: string): string {
   return format(new Date(value), "MMM d, yyyy");
 }
 
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function normalizeEmailInput(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isValidEmailFormat(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 export function SettingsPage() {
   const {
     activeAccount,
     activeAccountId,
     hasValidActiveAccount,
+    providers,
     refreshSession,
   } = useAuth();
   const [currentUser, setCurrentUser] = useState<CurrentUserResponse | null>(
@@ -93,14 +123,43 @@ export function SettingsPage() {
   const [deleteForm, setDeleteForm] = useState(EMPTY_DELETE_FORM);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isChangingEmail, setIsChangingEmail] = useState(false);
+  const [emailChangeChallenge, setEmailChangeChallenge] =
+    useState<RegistrationChallengeResponse | null>(null);
+  const [emailChangeOtp, setEmailChangeOtp] = useState("");
+  const [emailValidationError, setEmailValidationError] = useState<
+    string | null
+  >(null);
+  const [validatedEmailAddress, setValidatedEmailAddress] = useState<
+    string | null
+  >(null);
+  const [isCheckingEmailAvailability, setIsCheckingEmailAvailability] =
+    useState(false);
+  const [isVerifyingEmailChange, setIsVerifyingEmailChange] = useState(false);
+  const [isResendingEmailChange, setIsResendingEmailChange] = useState(false);
+  const [
+    emailChangeResendRemainingSeconds,
+    setEmailChangeResendRemainingSeconds,
+  ] = useState(0);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [providerActionDialog, setProviderActionDialog] =
+    useState<ProviderActionDialogState | null>(null);
+  const [providerActionPassword, setProviderActionPassword] = useState("");
+  const [providerActionError, setProviderActionError] = useState<string | null>(
+    null,
+  );
+  const [isSubmittingProviderAction, setIsSubmittingProviderAction] =
+    useState(false);
+  const emailValidationRequestId = useRef(0);
+  const emailVerificationSectionRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const loadCurrentUser = async () => {
       if (!hasValidActiveAccount) {
         setCurrentUser(null);
+        setEmailChangeChallenge(null);
+        setEmailChangeOtp("");
         setIsLoading(false);
         return;
       }
@@ -112,6 +171,11 @@ export function SettingsPage() {
         setProfileForm({ displayName: user.display_name || "" });
         setEmailForm({ newEmail: user.email, currentPassword: "" });
         setDeleteForm(EMPTY_DELETE_FORM);
+        setEmailChangeChallenge(null);
+        setEmailChangeOtp("");
+        setEmailValidationError(null);
+        setValidatedEmailAddress(null);
+        setIsCheckingEmailAvailability(false);
       } catch (err: any) {
         setNotice({
           tone: "error",
@@ -126,7 +190,159 @@ export function SettingsPage() {
     void loadCurrentUser();
   }, [activeAccountId, hasValidActiveAccount]);
 
+  useEffect(() => {
+    if (!currentUser?.has_email_auth) {
+      setEmailValidationError(null);
+      setValidatedEmailAddress(null);
+      setIsCheckingEmailAvailability(false);
+      return;
+    }
+
+    const normalizedNewEmail = normalizeEmailInput(emailForm.newEmail);
+    const currentEmail = normalizeEmailInput(currentUser.email);
+
+    if (!normalizedNewEmail) {
+      setEmailValidationError(null);
+      setValidatedEmailAddress(null);
+      setIsCheckingEmailAvailability(false);
+      return;
+    }
+
+    if (normalizedNewEmail === currentEmail) {
+      setEmailValidationError(null);
+      setValidatedEmailAddress(null);
+      setIsCheckingEmailAvailability(false);
+      return;
+    }
+
+    if (!isValidEmailFormat(normalizedNewEmail)) {
+      setEmailValidationError("Enter a valid email address");
+      setValidatedEmailAddress(null);
+      setIsCheckingEmailAvailability(false);
+      return;
+    }
+
+    const requestId = emailValidationRequestId.current + 1;
+    emailValidationRequestId.current = requestId;
+
+    const timeoutId = window.setTimeout(async () => {
+      setIsCheckingEmailAvailability(true);
+
+      try {
+        await apiClient.validateCurrentUserEmailChange(normalizedNewEmail);
+        if (emailValidationRequestId.current !== requestId) {
+          return;
+        }
+
+        setEmailValidationError(null);
+        setValidatedEmailAddress(normalizedNewEmail);
+      } catch (err: any) {
+        if (emailValidationRequestId.current !== requestId) {
+          return;
+        }
+
+        setEmailValidationError(
+          err?.detail || err?.message || "Failed to validate email",
+        );
+        setValidatedEmailAddress(null);
+      } finally {
+        if (emailValidationRequestId.current === requestId) {
+          setIsCheckingEmailAvailability(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [currentUser?.email, currentUser?.has_email_auth, emailForm.newEmail]);
+
+  useEffect(() => {
+    if (!emailChangeChallenge) {
+      setEmailChangeResendRemainingSeconds(0);
+      return;
+    }
+
+    const updateRemaining = () => {
+      const seconds = Math.max(
+        0,
+        Math.ceil(
+          (new Date(emailChangeChallenge.resendAvailableAt).getTime() -
+            Date.now()) /
+            1000,
+        ),
+      );
+      setEmailChangeResendRemainingSeconds(seconds);
+    };
+
+    updateRemaining();
+    const timer = window.setInterval(updateRemaining, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [emailChangeChallenge]);
+
+  useEffect(() => {
+    if (!emailChangeChallenge) {
+      return;
+    }
+
+    emailVerificationSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  }, [emailChangeChallenge]);
+
+  const clearEmailChangeChallenge = () => {
+    setEmailChangeChallenge(null);
+    setEmailChangeOtp("");
+    setEmailChangeResendRemainingSeconds(0);
+  };
+
+  const handleEmailInputChange = (nextEmail: string) => {
+    setEmailForm((current) => ({
+      ...current,
+      newEmail: nextEmail,
+    }));
+
+    if (
+      emailChangeChallenge &&
+      nextEmail.trim().toLowerCase() !==
+        emailChangeChallenge.email.toLowerCase()
+    ) {
+      clearEmailChangeChallenge();
+    }
+  };
+
   const connectedProviders = activeAccount?.providers || [];
+  const oauthProviderStates = useMemo(() => {
+    const connectedProvidersByType = new Map(
+      connectedProviders.map((provider) => [provider.type, provider]),
+    );
+
+    return providers
+      .filter((provider) => provider.isConfigured)
+      .map((provider) => ({
+        id: provider.id,
+        displayName: provider.displayName,
+        connection: connectedProvidersByType.get(provider.id) || null,
+      }));
+  }, [connectedProviders, providers]);
+  const linkedOauthProviderCount = oauthProviderStates.filter(
+    (provider) => provider.connection?.isLinked,
+  ).length;
+  const requiresProviderReauth = Boolean(currentUser?.has_email_auth);
+  const normalizedNewEmail = normalizeEmailInput(emailForm.newEmail);
+  const hasValidatedEmailChangeTarget =
+    validatedEmailAddress === normalizedNewEmail;
+  const canRequestEmailChangeCode =
+    Boolean(currentUser?.has_email_auth) &&
+    normalizedNewEmail.length > 0 &&
+    emailForm.currentPassword.trim().length > 0 &&
+    !emailValidationError &&
+    !isCheckingEmailAvailability &&
+    hasValidatedEmailChangeTarget;
   const deleteConfirmationMatches =
     currentUser !== null &&
     deleteForm.confirmation.trim().toLowerCase() ===
@@ -175,18 +391,47 @@ export function SettingsPage() {
       return;
     }
 
+    if (normalizedNewEmail === normalizeEmailInput(currentUser.email)) {
+      setNotice({
+        tone: "error",
+        message: "New email must be different from your current email",
+      });
+      return;
+    }
+
+    if (emailValidationError) {
+      setNotice({
+        tone: "error",
+        message: emailValidationError,
+      });
+      return;
+    }
+
+    if (!hasValidatedEmailChangeTarget || isCheckingEmailAvailability) {
+      setNotice({
+        tone: "error",
+        message: isCheckingEmailAvailability
+          ? "Checking email availability. Please wait a moment."
+          : "Enter an available email address before requesting a verification code.",
+      });
+      return;
+    }
+
     try {
       setIsChangingEmail(true);
       setNotice(null);
-      const updatedUser = await apiClient.changeCurrentUserEmail(
+      const challenge = await apiClient.startCurrentUserEmailChange(
         emailForm.newEmail.trim(),
         emailForm.currentPassword,
       );
-      setCurrentUser(updatedUser);
-      setEmailForm({ newEmail: updatedUser.email, currentPassword: "" });
-      setDeleteForm(EMPTY_DELETE_FORM);
-      await refreshSession();
-      setNotice({ tone: "success", message: "Email updated successfully" });
+      setEmailChangeChallenge(challenge);
+      setEmailChangeOtp("");
+      setEmailForm({ newEmail: challenge.email, currentPassword: "" });
+      setValidatedEmailAddress(normalizeEmailInput(challenge.email));
+      setNotice({
+        tone: "success",
+        message: `Verification code sent to ${challenge.email}. Confirm it to update your email.`,
+      });
     } catch (err: any) {
       setNotice({
         tone: "error",
@@ -194,6 +439,66 @@ export function SettingsPage() {
       });
     } finally {
       setIsChangingEmail(false);
+    }
+  };
+
+  const handleVerifyEmailChange = async (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+
+    if (emailChangeOtp.length !== 6) {
+      setNotice({
+        tone: "error",
+        message: "Enter the 6-digit verification code.",
+      });
+      return;
+    }
+
+    try {
+      setIsVerifyingEmailChange(true);
+      setNotice(null);
+      const updatedUser =
+        await apiClient.verifyCurrentUserEmailChange(emailChangeOtp);
+      setCurrentUser(updatedUser);
+      setEmailForm({ newEmail: updatedUser.email, currentPassword: "" });
+      setDeleteForm(EMPTY_DELETE_FORM);
+      clearEmailChangeChallenge();
+      await refreshSession();
+      setNotice({ tone: "success", message: "Email updated successfully" });
+    } catch (err: any) {
+      setNotice({
+        tone: "error",
+        message: err?.detail || err?.message || "Failed to verify email",
+      });
+    } finally {
+      setIsVerifyingEmailChange(false);
+    }
+  };
+
+  const handleResendEmailChange = async () => {
+    try {
+      setIsResendingEmailChange(true);
+      setNotice(null);
+      const challenge = await apiClient.resendCurrentUserEmailChange();
+      setEmailChangeChallenge(challenge);
+      setEmailChangeOtp("");
+      setEmailForm((current) => ({
+        ...current,
+        newEmail: challenge.email,
+        currentPassword: "",
+      }));
+      setNotice({
+        tone: "success",
+        message: `A new verification code was sent to ${challenge.email}.`,
+      });
+    } catch (err: any) {
+      setNotice({
+        tone: "error",
+        message: err?.detail || err?.message || "Failed to resend code",
+      });
+    } finally {
+      setIsResendingEmailChange(false);
     }
   };
 
@@ -251,6 +556,70 @@ export function SettingsPage() {
       });
     } finally {
       setIsDeletingAccount(false);
+    }
+  };
+
+  const openProviderActionDialog = (
+    mode: ProviderActionDialogState["mode"],
+    providerId: string,
+    providerLabel: string,
+  ) => {
+    setProviderActionPassword("");
+    setProviderActionError(null);
+    setProviderActionDialog({ mode, providerId, providerLabel });
+  };
+
+  const handleProviderAction = async () => {
+    if (!providerActionDialog) {
+      return;
+    }
+
+    try {
+      setIsSubmittingProviderAction(true);
+      setProviderActionError(null);
+      setNotice(null);
+
+      if (providerActionDialog.mode === "connect") {
+        const form = document.createElement("form");
+        form.method = "POST";
+        form.action = apiClient.getOAuthProviderLinkStartUrl(
+          providerActionDialog.providerId,
+        );
+        form.style.display = "none";
+
+        if (requiresProviderReauth) {
+          const passwordInput = document.createElement("input");
+          passwordInput.type = "hidden";
+          passwordInput.name = "current_password";
+          passwordInput.value = providerActionPassword;
+          form.appendChild(passwordInput);
+        }
+
+        document.body.appendChild(form);
+        form.submit();
+        form.remove();
+        return;
+      }
+
+      await apiClient.unlinkOAuthProvider(
+        providerActionDialog.providerId,
+        requiresProviderReauth ? providerActionPassword : undefined,
+      );
+      await refreshSession();
+      const updatedUser = await apiClient.getCurrentUser();
+      setCurrentUser(updatedUser);
+      setProviderActionDialog(null);
+      setProviderActionPassword("");
+      setNotice({
+        tone: "success",
+        message: `${providerActionDialog.providerLabel} disconnected successfully`,
+      });
+    } catch (err: any) {
+      setProviderActionError(
+        err?.detail || err?.message || "Failed to update connected provider",
+      );
+    } finally {
+      setIsSubmittingProviderAction(false);
     }
   };
 
@@ -377,37 +746,116 @@ export function SettingsPage() {
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 text-sm font-medium text-foreground">
                       <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                      Sign-in methods
+                      Connected Accounts
                     </div>
-                    {connectedProviders.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {connectedProviders.map((provider) => (
+                    <div className="space-y-3">
+                      <div className="rounded-2xl border border-border/60 px-4 py-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                              <Mail className="h-4 w-4 text-slate-600" />
+                              Email and password
+                            </div>
+                            <p className="mt-2 text-sm text-muted-foreground">
+                              {currentUser.has_email_auth
+                                ? currentUser.email
+                                : "Not connected"}
+                            </p>
+                          </div>
                           <Badge
-                            key={provider.type}
-                            variant="secondary"
+                            variant={
+                              currentUser.has_email_auth
+                                ? "secondary"
+                                : "outline"
+                            }
                             className={
-                              provider.isValid
-                                ? "gap-2 rounded-full bg-secondary/70 px-3 py-1 text-foreground"
-                                : "gap-2 rounded-full bg-red-100 px-3 py-1 text-red-700"
+                              currentUser.has_email_auth
+                                ? "bg-secondary/70 text-foreground"
+                                : "text-muted-foreground"
                             }
                           >
-                            {provider.type === "google" ? (
-                              <GoogleIcon className="h-3.5 w-3.5" />
-                            ) : provider.type === "github" ? (
-                              <Github className="h-3.5 w-3.5" />
-                            ) : (
-                              <Mail className="h-3.5 w-3.5" />
-                            )}
-                            {provider.label}
+                            {currentUser.has_email_auth
+                              ? "Connected"
+                              : "Not connected"}
                           </Badge>
-                        ))}
+                        </div>
                       </div>
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-border/60 px-4 py-3 text-sm text-muted-foreground">
-                        No connected sign-in methods are available for this
-                        account.
-                      </div>
-                    )}
+
+                      {oauthProviderStates.map((provider) => {
+                        const connection = provider.connection;
+                        const isConnected = connection?.isLinked === true;
+                        const canDisconnect =
+                          isConnected &&
+                          (currentUser.has_email_auth ||
+                            linkedOauthProviderCount > 1);
+
+                        return (
+                          <div
+                            key={provider.id}
+                            className="rounded-2xl border border-border/60 px-4 py-4"
+                          >
+                            <div className="flex flex-col gap-4">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                                  {provider.id === "google" ? (
+                                    <GoogleIcon className="h-4 w-4" />
+                                  ) : (
+                                    <KeyRound className="h-4 w-4" />
+                                  )}
+                                  {provider.displayName}
+                                </div>
+                                <p className="mt-2 break-all text-sm text-muted-foreground">
+                                  {isConnected
+                                    ? connection?.providerEmail ||
+                                      "Connected without provider email"
+                                    : "Not connected"}
+                                </p>
+                                {isConnected && !canDisconnect && (
+                                  <p className="mt-2 text-xs text-amber-700">
+                                    Connect another login method before
+                                    disconnecting this provider.
+                                  </p>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge
+                                  variant={
+                                    isConnected ? "secondary" : "outline"
+                                  }
+                                  className={
+                                    isConnected
+                                      ? "bg-secondary/70 text-foreground"
+                                      : "text-muted-foreground"
+                                  }
+                                >
+                                  {isConnected ? "Connected" : "Not connected"}
+                                </Badge>
+                                <Button
+                                  type="button"
+                                  variant={isConnected ? "outline" : "default"}
+                                  className={
+                                    isConnected
+                                      ? "shrink-0"
+                                      : "shrink-0 bg-slate-900 text-white hover:bg-slate-800"
+                                  }
+                                  disabled={isConnected && !canDisconnect}
+                                  onClick={() =>
+                                    openProviderActionDialog(
+                                      isConnected ? "unlink" : "connect",
+                                      provider.id,
+                                      provider.displayName,
+                                    )
+                                  }
+                                >
+                                  {isConnected ? "Disconnect" : "Connect"}
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -477,11 +925,11 @@ export function SettingsPage() {
                         <CardHeader>
                           <CardTitle>Change email</CardTitle>
                           <CardDescription>
-                            Update the email tied to your password-based
-                            sign-in.
+                            Verify the new address with a one-time code before
+                            we update your password-based sign-in email.
                           </CardDescription>
                         </CardHeader>
-                        <CardContent>
+                        <CardContent className="space-y-5">
                           <form
                             className="space-y-5"
                             onSubmit={handleEmailSubmit}
@@ -494,14 +942,25 @@ export function SettingsPage() {
                                 type="email"
                                 value={emailForm.newEmail}
                                 onChange={(event) =>
-                                  setEmailForm((current) => ({
-                                    ...current,
-                                    newEmail: event.target.value,
-                                  }))
+                                  handleEmailInputChange(event.target.value)
                                 }
                                 disabled={isChangingEmail}
                                 className={ELEVATED_INPUT_CLASS_NAME}
                               />
+                              {isCheckingEmailAvailability ? (
+                                <p className="text-xs text-muted-foreground">
+                                  Checking email availability...
+                                </p>
+                              ) : emailValidationError ? (
+                                <p className="text-xs text-red-600">
+                                  {emailValidationError}
+                                </p>
+                              ) : hasValidatedEmailChangeTarget ? (
+                                <p className="text-xs text-emerald-700">
+                                  Email is available. You can send a
+                                  verification code.
+                                </p>
+                              ) : null}
                             </div>
 
                             <div className="space-y-2">
@@ -522,14 +981,136 @@ export function SettingsPage() {
                               />
                             </div>
 
+                            <Alert className="border-sky-200 bg-sky-50 text-sky-950">
+                              <ShieldCheck className="h-4 w-4" />
+                              <AlertTitle>
+                                Connected login methods stay linked
+                              </AlertTitle>
+                              <AlertDescription>
+                                Changing your email will not affect your
+                                connected login methods.
+                              </AlertDescription>
+                            </Alert>
+
                             <div className="flex justify-end">
-                              <Button type="submit" disabled={isChangingEmail}>
+                              <Button
+                                type="submit"
+                                disabled={
+                                  isChangingEmail || !canRequestEmailChangeCode
+                                }
+                              >
                                 {isChangingEmail
-                                  ? "Updating..."
-                                  : "Update email"}
+                                  ? "Sending..."
+                                  : isCheckingEmailAvailability
+                                    ? "Checking..."
+                                    : emailChangeChallenge
+                                      ? "Send new code"
+                                      : "Send verification code"}
                               </Button>
                             </div>
                           </form>
+
+                          {emailChangeChallenge && (
+                            <div
+                              ref={emailVerificationSectionRef}
+                              className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-5"
+                            >
+                              <div className="space-y-4">
+                                <div className="space-y-1">
+                                  <p className="text-sm font-semibold text-emerald-950">
+                                    Verify new email
+                                  </p>
+                                  <p className="text-sm text-emerald-900">
+                                    {emailChangeChallenge.message}
+                                  </p>
+                                  <p className="text-sm text-emerald-900">
+                                    We sent a 6-digit code to{" "}
+                                    {emailChangeChallenge.email}.
+                                  </p>
+                                </div>
+
+                                <form
+                                  className="space-y-4"
+                                  onSubmit={handleVerifyEmailChange}
+                                >
+                                  <div className="space-y-2">
+                                    <label className="text-sm font-medium text-foreground">
+                                      Verification code
+                                    </label>
+                                    <InputOTP
+                                      value={emailChangeOtp}
+                                      onChange={setEmailChangeOtp}
+                                      maxLength={6}
+                                      autoFocus
+                                      disabled={isVerifyingEmailChange}
+                                    >
+                                      <InputOTPGroup>
+                                        <InputOTPSlot index={0} />
+                                        <InputOTPSlot index={1} />
+                                        <InputOTPSlot index={2} />
+                                      </InputOTPGroup>
+                                      <InputOTPSeparator />
+                                      <InputOTPGroup>
+                                        <InputOTPSlot index={3} />
+                                        <InputOTPSlot index={4} />
+                                        <InputOTPSlot index={5} />
+                                      </InputOTPGroup>
+                                    </InputOTP>
+                                  </div>
+
+                                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                    <p className="text-sm text-emerald-900/80">
+                                      {emailChangeResendRemainingSeconds > 0
+                                        ? `Resend available in ${formatCountdown(emailChangeResendRemainingSeconds)}`
+                                        : "Didn't receive the code? You can resend it now."}
+                                    </p>
+
+                                    <div className="flex flex-wrap gap-2">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        onClick={clearEmailChangeChallenge}
+                                        disabled={
+                                          isVerifyingEmailChange ||
+                                          isResendingEmailChange
+                                        }
+                                      >
+                                        Use different email
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() =>
+                                          void handleResendEmailChange()
+                                        }
+                                        disabled={
+                                          emailChangeResendRemainingSeconds >
+                                            0 ||
+                                          isResendingEmailChange ||
+                                          isVerifyingEmailChange
+                                        }
+                                      >
+                                        {isResendingEmailChange
+                                          ? "Resending..."
+                                          : "Resend code"}
+                                      </Button>
+                                      <Button
+                                        type="submit"
+                                        disabled={
+                                          emailChangeOtp.length !== 6 ||
+                                          isVerifyingEmailChange
+                                        }
+                                      >
+                                        {isVerifyingEmailChange
+                                          ? "Verifying..."
+                                          : "Verify and update email"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </form>
+                              </div>
+                            </div>
+                          )}
                         </CardContent>
                       </Card>
 
@@ -746,6 +1327,94 @@ export function SettingsPage() {
               disabled={isDeletingAccount}
             >
               {isDeletingAccount ? "Deleting..." : "Delete permanently"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={providerActionDialog !== null}
+        onOpenChange={(open: boolean) => {
+          if (!open && !isSubmittingProviderAction) {
+            setProviderActionDialog(null);
+            setProviderActionPassword("");
+            setProviderActionError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {providerActionDialog?.mode === "unlink"
+                ? `Disconnect ${providerActionDialog.providerLabel}`
+                : `Connect ${providerActionDialog?.providerLabel}`}
+            </DialogTitle>
+            <DialogDescription>
+              {providerActionDialog?.mode === "unlink"
+                ? "Disconnect this provider from your account."
+                : "Start the secure OAuth flow to connect this provider to your current account."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {providerActionError && (
+            <Alert className="border-red-200 bg-red-50 text-red-950">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Action failed</AlertTitle>
+              <AlertDescription>{providerActionError}</AlertDescription>
+            </Alert>
+          )}
+
+          {requiresProviderReauth && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Current password
+              </label>
+              <Input
+                type="password"
+                value={providerActionPassword}
+                onChange={(event) =>
+                  setProviderActionPassword(event.target.value)
+                }
+                disabled={isSubmittingProviderAction}
+                className={ELEVATED_INPUT_CLASS_NAME}
+              />
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setProviderActionDialog(null);
+                setProviderActionPassword("");
+                setProviderActionError(null);
+              }}
+              disabled={isSubmittingProviderAction}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className={
+                providerActionDialog?.mode === "unlink"
+                  ? "bg-red-600 text-white hover:bg-red-700"
+                  : "bg-slate-900 text-white hover:bg-slate-800"
+              }
+              onClick={() => void handleProviderAction()}
+              disabled={
+                isSubmittingProviderAction ||
+                (requiresProviderReauth &&
+                  providerActionPassword.trim().length === 0)
+              }
+            >
+              {isSubmittingProviderAction
+                ? providerActionDialog?.mode === "unlink"
+                  ? "Disconnecting..."
+                  : "Redirecting..."
+                : providerActionDialog?.mode === "unlink"
+                  ? "Disconnect provider"
+                  : "Continue"}
             </Button>
           </DialogFooter>
         </DialogContent>

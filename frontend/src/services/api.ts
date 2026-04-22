@@ -96,6 +96,8 @@ export interface ConnectedProviderSummary {
   label: string;
   isInSession: boolean;
   isValid: boolean;
+  isLinked: boolean;
+  providerEmail: string | null;
   expiresAt: number | null;
 }
 
@@ -135,6 +137,10 @@ export interface CurrentUserResponse {
 
 export interface StatusResponse {
   message: string;
+}
+
+export interface AuthorizationUrlResponse {
+  authorizationUrl: string;
 }
 
 export interface StoredAudioFile {
@@ -391,6 +397,10 @@ class ApiClient {
     return `${this.baseUrl}/api/auth/oauth/${provider}/start${suffix ? `?${suffix}` : ""}`;
   }
 
+  getOAuthProviderLinkStartUrl(provider: string): string {
+    return `${this.baseUrl}/api/auth/me/providers/${provider}/link/redirect`;
+  }
+
   async switchAccount(accountId: string): Promise<AuthSessionResponse> {
     return this.request<AuthSessionResponse>("/api/auth/switch", {
       method: "POST",
@@ -411,6 +421,32 @@ class ApiClient {
     return this.request<AuthSessionResponse>("/api/auth/logout-all", {
       method: "POST",
     });
+  }
+
+  async startOAuthProviderLink(
+    provider: string,
+    currentPassword?: string,
+  ): Promise<AuthorizationUrlResponse> {
+    return this.request<AuthorizationUrlResponse>(
+      `/api/auth/me/providers/${provider}/link/start`,
+      {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword }),
+      },
+    );
+  }
+
+  async unlinkOAuthProvider(
+    provider: string,
+    currentPassword?: string,
+  ): Promise<AuthSessionResponse> {
+    return this.request<AuthSessionResponse>(
+      `/api/auth/me/providers/${provider}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ current_password: currentPassword }),
+      },
+    );
   }
 
   /**
@@ -504,19 +540,58 @@ class ApiClient {
     return normalizeCurrentUserResponse(user);
   }
 
-  async changeCurrentUserEmail(
+  async startCurrentUserEmailChange(
     newEmail: string,
     currentPassword: string,
-  ): Promise<CurrentUserResponse> {
-    const user = await this.request<CurrentUserResponse>("/api/auth/me/email", {
+  ): Promise<RegistrationChallengeResponse> {
+    return this.request<RegistrationChallengeResponse>("/api/auth/me/email", {
       method: "POST",
       body: JSON.stringify({
         new_email: newEmail,
         current_password: currentPassword,
       }),
     });
+  }
+
+  async validateCurrentUserEmailChange(
+    newEmail: string,
+  ): Promise<StatusResponse> {
+    return this.request<StatusResponse>("/api/auth/me/email/validate", {
+      method: "POST",
+      body: JSON.stringify({
+        new_email: newEmail,
+      }),
+    });
+  }
+
+  async changeCurrentUserEmail(
+    newEmail: string,
+    currentPassword: string,
+  ): Promise<RegistrationChallengeResponse> {
+    return this.startCurrentUserEmailChange(newEmail, currentPassword);
+  }
+
+  async verifyCurrentUserEmailChange(
+    otp: string,
+  ): Promise<CurrentUserResponse> {
+    const user = await this.request<CurrentUserResponse>(
+      "/api/auth/me/email/verify",
+      {
+        method: "POST",
+        body: JSON.stringify({ otp }),
+      },
+    );
 
     return normalizeCurrentUserResponse(user);
+  }
+
+  async resendCurrentUserEmailChange(): Promise<RegistrationChallengeResponse> {
+    return this.request<RegistrationChallengeResponse>(
+      "/api/auth/me/email/resend",
+      {
+        method: "POST",
+      },
+    );
   }
 
   async changeCurrentUserPassword(
@@ -642,10 +717,22 @@ class ApiClient {
   /**
    * Delete project
    */
-  async deleteProject(projectId: string): Promise<void> {
-    return this.request(`/api/projects/${projectId}`, {
-      method: "DELETE",
-    });
+  async deleteProject(
+    projectId: string,
+    options?: { deleteAudioFiles?: boolean },
+  ): Promise<void> {
+    const params = new URLSearchParams();
+    if (options?.deleteAudioFiles) {
+      params.set("delete_audio_files", "true");
+    }
+
+    const queryString = params.toString();
+    return this.request(
+      `/api/projects/${projectId}${queryString ? `?${queryString}` : ""}`,
+      {
+        method: "DELETE",
+      },
+    );
   }
 
   // ==================== FOLDER ENDPOINTS ====================

@@ -1,4 +1,4 @@
-import { Eye, EyeOff, Github, KeyRound, Mail } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Mail } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -20,8 +20,6 @@ import { useAuth } from "../services/auth";
 
 function getProviderIcon(providerId: string) {
   switch (providerId) {
-    case "github":
-      return Github;
     case "google":
       return GoogleIcon;
     default:

@@ -13,9 +13,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.services.email_delivery_service import EmailDeliveryService
-from database.models import PendingEmailVerification, User
+from database.models import PendingEmailChange, PendingEmailVerification, User
 
 logger = logging.getLogger(__name__)
+
+GITHUB_LOGIN_REMOVED_MESSAGE = (
+    "GitHub login is no longer supported. Please use Google or reset your password."
+)
 
 OTP_LENGTH = 6
 OTP_EXPIRY_MINUTES = 5
@@ -28,6 +32,9 @@ VERIFY_RATE_LIMIT = (10, 15 * 60)
 RESEND_RATE_LIMIT = (5, 15 * 60)
 OAUTH_LINK_VERIFY_RATE_LIMIT = (10, 15 * 60)
 OAUTH_LINK_RESEND_RATE_LIMIT = (5, 15 * 60)
+EMAIL_CHANGE_REQUEST_RATE_LIMIT = (5, 15 * 60)
+EMAIL_CHANGE_VERIFY_RATE_LIMIT = (10, 15 * 60)
+EMAIL_CHANGE_RESEND_RATE_LIMIT = (5, 15 * 60)
 
 _RATE_LIMIT_STORE: dict[str, list[float]] = {}
 
@@ -100,6 +107,9 @@ class EmailAuthService:
             "resend": RESEND_RATE_LIMIT,
             "oauth_link_verify": OAUTH_LINK_VERIFY_RATE_LIMIT,
             "oauth_link_resend": OAUTH_LINK_RESEND_RATE_LIMIT,
+            "email_change_request": EMAIL_CHANGE_REQUEST_RATE_LIMIT,
+            "email_change_verify": EMAIL_CHANGE_VERIFY_RATE_LIMIT,
+            "email_change_resend": EMAIL_CHANGE_RESEND_RATE_LIMIT,
         }
         max_attempts, window_seconds = limits[action]
         key = EmailAuthService._build_rate_limit_key(action, email, request)
@@ -152,6 +162,90 @@ class EmailAuthService:
         pending.updated_at = now
         db.flush()
         return pending
+
+    @staticmethod
+    def upsert_pending_email_change(
+        db: Session,
+        user: User,
+        new_email: str,
+        otp_code: str,
+    ) -> PendingEmailChange:
+        now = _utcnow()
+        pending = (
+            db.query(PendingEmailChange)
+            .filter(PendingEmailChange.user_id == user.id)
+            .first()
+        )
+
+        if pending is None:
+            pending = PendingEmailChange(
+                user_id=user.id,
+                created_at=now,
+            )
+            db.add(pending)
+
+        pending.new_email = new_email
+        pending.otp_hash = EmailAuthService.hash_otp(otp_code)
+        pending.otp_expires_at = now + timedelta(minutes=OTP_EXPIRY_MINUTES)
+        pending.failed_attempts = 0
+        pending.resend_count = (pending.resend_count or 0) + 1
+        pending.resend_available_at = now + timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS)
+        pending.last_sent_at = now
+        pending.updated_at = now
+        db.flush()
+        return pending
+
+    @staticmethod
+    def build_email_change_response(
+        record: PendingEmailChange,
+        message: str,
+    ) -> dict[str, str | int | None]:
+        resend_available_in = max(
+            0,
+            int((record.resend_available_at - _utcnow()).total_seconds()),
+        )
+        return {
+            "email": record.new_email,
+            "message": message,
+            "expiresAt": record.otp_expires_at.isoformat(),
+            "resendAvailableAt": record.resend_available_at.isoformat(),
+            "resendCooldownSeconds": OTP_RESEND_COOLDOWN_SECONDS,
+            "resendAvailableInSeconds": resend_available_in,
+            "verificationType": "email_change",
+            "provider": None,
+        }
+
+    @staticmethod
+    def validate_email_change_target(
+        db: Session,
+        user: User,
+        new_email: str,
+    ) -> str:
+        normalized_email = EmailAuthService.normalize_email(new_email)
+        if not normalized_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New email is required",
+            )
+
+        if normalized_email == EmailAuthService.normalize_email(user.email):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New email must be different from your current email",
+            )
+
+        existing_user = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .first()
+        )
+        if existing_user and existing_user.id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
+
+        return normalized_email
 
     @staticmethod
     def start_registration(db: Session, request: Request, email: str, password: str) -> dict[str, str | int]:
@@ -359,6 +453,199 @@ class EmailAuthService:
         return existing_user
 
     @staticmethod
+    def start_email_change(
+        db: Session,
+        request: Request,
+        user: User,
+        new_email: str,
+    ) -> dict[str, str | int | None]:
+        normalized_email = EmailAuthService.validate_email_change_target(
+            db,
+            user,
+            new_email,
+        )
+
+        EmailAuthService.enforce_rate_limit("email_change_request", normalized_email, request)
+
+        pending = (
+            db.query(PendingEmailChange)
+            .filter(PendingEmailChange.user_id == user.id)
+            .first()
+        )
+        now = _utcnow()
+        if (
+            pending is not None
+            and pending.new_email == normalized_email
+            and pending.resend_available_at > now
+        ):
+            retry_after = int((pending.resend_available_at - now).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {retry_after} seconds before requesting another OTP.",
+            )
+
+        otp_code = EmailAuthService.generate_otp()
+        pending = EmailAuthService.upsert_pending_email_change(
+            db,
+            user,
+            normalized_email,
+            otp_code,
+        )
+        try:
+            EmailDeliveryService.send_email_change_otp(
+                recipient_email=normalized_email,
+                otp_code=otp_code,
+                expires_in_minutes=OTP_EXPIRY_MINUTES,
+            )
+            db.commit()
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            logger.exception("Failed to deliver email change OTP to %s", normalized_email)
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            ) from exc
+
+        return EmailAuthService.build_email_change_response(
+            pending,
+            "Verification code sent. Enter the OTP to confirm your new email.",
+        )
+
+    @staticmethod
+    def resend_email_change(
+        db: Session,
+        request: Request,
+        user: User,
+    ) -> dict[str, str | int | None]:
+        pending = (
+            db.query(PendingEmailChange)
+            .filter(PendingEmailChange.user_id == user.id)
+            .first()
+        )
+        if pending is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No pending email change found for this account",
+            )
+
+        normalized_email = EmailAuthService.normalize_email(pending.new_email)
+        EmailAuthService.enforce_rate_limit("email_change_resend", normalized_email, request)
+
+        now = _utcnow()
+        if pending.resend_available_at > now:
+            retry_after = int((pending.resend_available_at - now).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {retry_after} seconds before resending the OTP.",
+            )
+
+        otp_code = EmailAuthService.generate_otp()
+        pending = EmailAuthService.upsert_pending_email_change(
+            db,
+            user,
+            normalized_email,
+            otp_code,
+        )
+        try:
+            EmailDeliveryService.send_email_change_otp(
+                recipient_email=normalized_email,
+                otp_code=otp_code,
+                expires_in_minutes=OTP_EXPIRY_MINUTES,
+            )
+            db.commit()
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            logger.exception("Failed to resend email change OTP to %s", normalized_email)
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            ) from exc
+
+        return EmailAuthService.build_email_change_response(
+            pending,
+            "A new verification code has been sent to your new email address.",
+        )
+
+    @staticmethod
+    def verify_email_change(
+        db: Session,
+        request: Request,
+        user: User,
+        otp_code: str,
+    ) -> User:
+        pending = (
+            db.query(PendingEmailChange)
+            .filter(PendingEmailChange.user_id == user.id)
+            .first()
+        )
+        if pending is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No pending email change found for this account",
+            )
+
+        normalized_email = EmailAuthService.normalize_email(pending.new_email)
+        EmailAuthService.enforce_rate_limit("email_change_verify", normalized_email, request)
+
+        now = _utcnow()
+        if pending.otp_expires_at < now:
+            db.delete(pending)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OTP expired. Request a new verification code.",
+            )
+
+        if pending.failed_attempts >= OTP_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Maximum OTP attempts exceeded. Request a new verification code.",
+            )
+
+        if not EmailAuthService.verify_otp(otp_code, pending.otp_hash):
+            pending.failed_attempts += 1
+            pending.updated_at = now
+            db.commit()
+            remaining_attempts = max(0, OTP_MAX_ATTEMPTS - pending.failed_attempts)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Invalid OTP. "
+                    + (
+                        f"{remaining_attempts} attempt(s) remaining."
+                        if remaining_attempts > 0
+                        else "Request a new verification code."
+                    )
+                ),
+            )
+
+        existing_user = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .first()
+        )
+        if existing_user and existing_user.id != user.id:
+            db.delete(pending)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
+
+        user.email = normalized_email
+        user.is_email_verified = True
+        user.updated_at = now
+        db.flush()
+        db.delete(pending)
+        return user
+
+    @staticmethod
     def authenticate_user(db: Session, email: str, password: str) -> User:
         normalized_email = EmailAuthService.normalize_email(email)
         user = (
@@ -366,16 +653,31 @@ class EmailAuthService:
             .filter(func.lower(User.email) == normalized_email)
             .first()
         )
-        if user is None or not EmailAuthService.verify_password(password, user.password_hash):
+        if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
             )
 
         if not user.has_email_auth:
+            linked_provider_names = {
+                identity.provider
+                for identity in user.oauth_identities
+            }
+            if linked_provider_names and linked_provider_names <= {"github"}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=GITHUB_LOGIN_REMOVED_MESSAGE,
+                )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This email is linked to social sign-in only. Complete email verification to add password sign-in.",
+            )
+
+        if not EmailAuthService.verify_password(password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
             )
 
         if not user.is_email_verified:

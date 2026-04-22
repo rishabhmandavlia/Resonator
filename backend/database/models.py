@@ -30,6 +30,11 @@ class User(Base):
     generations = relationship("Generation", back_populates="user", cascade="all, delete-orphan")
     oauth_identities = relationship("OAuthIdentity", back_populates="user", cascade="all, delete-orphan")
     session_accounts = relationship("SessionAccount", back_populates="user")
+    pending_email_changes = relationship(
+        "PendingEmailChange",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class PendingEmailVerification(Base):
@@ -80,6 +85,28 @@ class PendingOAuthLink(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     session = relationship("AuthSession", back_populates="pending_oauth_links")
+
+
+class PendingEmailChange(Base):
+    """Temporary email change state waiting for OTP-based verification."""
+    __tablename__ = "pending_email_changes"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_pending_email_change_user"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    new_email = Column(String(255), nullable=False, index=True)
+    otp_hash = Column(String(255), nullable=False)
+    otp_expires_at = Column(DateTime, nullable=False, index=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    resend_count = Column(Integer, nullable=False, default=0)
+    resend_available_at = Column(DateTime, nullable=False)
+    last_sent_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="pending_email_changes")
 
 
 class AuthSession(Base):
@@ -181,6 +208,7 @@ class OAuthAuthorizationState(Base):
     nonce = Column(String(255), nullable=True)
     code_verifier = Column(String(255), nullable=False)
     prompt = Column(String(255), nullable=True)
+    link_user_id = Column(String(36), nullable=True, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     expires_at = Column(DateTime, nullable=False, index=True)
 

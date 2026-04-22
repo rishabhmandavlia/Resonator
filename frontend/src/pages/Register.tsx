@@ -1,11 +1,4 @@
-import {
-  Eye,
-  EyeOff,
-  Github,
-  KeyRound,
-  Mail,
-  RefreshCcw,
-} from "lucide-react";
+import { Eye, EyeOff, KeyRound, Mail, RefreshCcw } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -32,8 +25,6 @@ import { useAuth } from "../services/auth";
 
 function getProviderIcon(providerId: string) {
   switch (providerId) {
-    case "github":
-      return Github;
     case "google":
       return GoogleIcon;
     default:
@@ -43,8 +34,6 @@ function getProviderIcon(providerId: string) {
 
 function getProviderDisplayName(providerId: string | null) {
   switch (providerId) {
-    case "github":
-      return "GitHub";
     case "google":
       return "Google";
     default:
@@ -293,8 +282,8 @@ export function Register() {
                   OAuth still available
                 </p>
                 <p className="mt-1 text-sm leading-6 text-slate-300">
-                  Google and GitHub continue to use the existing multi-account
-                  OAuth session flow.
+                  Google continues to use the existing multi-account OAuth
+                  session flow.
                 </p>
               </div>
             </div>
@@ -313,7 +302,7 @@ export function Register() {
             <CardDescription className="text-sm leading-6 text-slate-600">
               {isOtpStep
                 ? `Enter the code sent to ${email}.`
-                : "Use email/password for registration or continue with OAuth."}
+                : "Use email/password for registration or continue with Google."}
             </CardDescription>
           </CardHeader>
 

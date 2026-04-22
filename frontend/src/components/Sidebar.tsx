@@ -6,7 +6,6 @@ import {
   ChevronsUpDown,
   Database,
   FolderKanban,
-  Github,
   History,
   KeyRound,
   LogOut,
@@ -79,8 +78,6 @@ function buildInitials(value: string) {
 
 function getProviderIcon(provider: string) {
   switch (provider) {
-    case "github":
-      return Github;
     case "google":
       return GoogleIcon;
     case "email":
@@ -92,8 +89,6 @@ function getProviderIcon(provider: string) {
 
 function getProviderBadgeClasses(provider: string) {
   switch (provider) {
-    case "github":
-      return "bg-slate-900 text-white";
     case "google":
       return "bg-white text-slate-700 ring-1 ring-slate-200";
     case "email":
@@ -402,43 +397,30 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                 <div key={item.id} className="group relative">
                   <button
                     onClick={() => handleNavigationClick(item.id)}
+                    aria-current={isActive ? "page" : undefined}
                     className={cn(
-                      "relative flex items-center overflow-hidden border border-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_28px_rgba(15,23,42,0.16)]",
+                      "relative flex items-center overflow-hidden border border-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_28px_rgba(15,23,42,0.16)] focus-visible:text-white",
                       isExpanded
                         ? "w-full justify-start rounded-2xl px-4 py-3.5"
                         : "mx-auto h-12 w-12 justify-center rounded-[1.1rem]",
                       isActive
-                        ? "border-white/15 bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 shadow-[0_18px_35px_rgba(34,197,94,0.18)] ring-1 ring-white/12"
-                        : "border-white/8 bg-white/6 hover:border-white/20 hover:bg-white/12",
+                        ? "border-white/15 bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 text-white shadow-[0_18px_35px_rgba(34,197,94,0.18)] ring-1 ring-white/12"
+                        : "border-white/8 bg-white/6 text-white hover:border-white/20 hover:bg-white/12 hover:text-white",
                     )}
                   >
                     {!isActive && isExpanded && (
                       <div className="pointer-events-none absolute inset-y-0 left-0 w-px bg-white/8" />
                     )}
 
-                    <Icon
-                      className={cn(
-                        "h-5 w-5 shrink-0 transition-colors duration-300",
-                        isActive
-                          ? "text-white"
-                          : "text-white/90 group-hover:text-white",
-                      )}
-                    />
+                    <Icon className="h-5 w-5 shrink-0 text-inherit transition-colors duration-300" />
 
                     {isExpanded && (
                       <div className="ml-3 overflow-hidden">
-                        <div
-                          className={cn(
-                            "whitespace-nowrap text-sm font-medium transition-colors duration-300",
-                            isActive
-                              ? "text-white"
-                              : "text-white/92 group-hover:text-white",
-                          )}
-                        >
+                        <div className="whitespace-nowrap text-sm font-medium text-inherit transition-colors duration-300">
                           {item.name}
                         </div>
                         {isActive && (
-                          <div className="mt-0.5 whitespace-nowrap text-xs text-white/72">
+                          <div className="mt-0.5 whitespace-nowrap text-xs text-white">
                             {item.description}
                           </div>
                         )}

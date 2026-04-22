@@ -118,3 +118,56 @@ class EmailDeliveryService:
             return
 
         EmailDeliveryService._send_via_smtp(message)
+
+    @staticmethod
+    def send_email_change_otp(
+        recipient_email: str,
+        otp_code: str,
+        expires_in_minutes: int,
+    ) -> None:
+        subject = f"Confirm your new email for {APPLICATION_NAME}"
+        text_body = (
+            f"Hello,\n\n"
+            f"We received a request to change the email address on your {APPLICATION_NAME} account.\n\n"
+            f"Use this one-time verification code to confirm the new email address:\n\n"
+            f"{otp_code}\n\n"
+            f"This code expires in {expires_in_minutes} minutes.\n\n"
+            "If you did not request this change, you can safely ignore this email.\n\n"
+            f"Thanks,\n{APPLICATION_NAME}"
+        )
+        html_body = (
+            "<html>"
+            "<body style=\"margin:0;padding:24px;background:#f8fafc;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
+            "<div style=\"max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden;box-shadow:0 20px 45px rgba(15,23,42,0.08);\">"
+            "<div style=\"padding:28px 32px;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#ffffff;\">"
+            f"<div style=\"font-size:13px;letter-spacing:0.18em;text-transform:uppercase;opacity:0.72;\">{APPLICATION_NAME}</div>"
+            "<h1 style=\"margin:14px 0 0;font-size:28px;line-height:1.2;\">Confirm your new email</h1>"
+            "</div>"
+            "<div style=\"padding:32px;\">"
+            f"<p style=\"margin:0 0 16px;font-size:16px;line-height:1.7;color:#334155;\">We received a request to change the email address on your <strong>{APPLICATION_NAME}</strong> account.</p>"
+            "<p style=\"margin:0 0 16px;font-size:16px;line-height:1.7;color:#334155;\">Use this one-time code to confirm the new email address before we save it:</p>"
+            f"<div style=\"margin:24px 0;padding:20px;border-radius:16px;background:#eff6ff;border:1px solid #bfdbfe;text-align:center;\"><div style=\"font-size:34px;font-weight:700;letter-spacing:0.35em;color:#0f172a;text-indent:0.35em;\">{otp_code}</div></div>"
+            f"<p style=\"margin:0 0 10px;font-size:14px;line-height:1.7;color:#475569;\">This code expires in <strong>{expires_in_minutes} minutes</strong>.</p>"
+            "<p style=\"margin:0;font-size:14px;line-height:1.7;color:#64748b;\">If you did not request this change, you can safely ignore this email.</p>"
+            "</div>"
+            "</div>"
+            "</body>"
+            "</html>"
+        )
+        message = EmailDeliveryService._build_message(
+            recipient_email,
+            subject,
+            text_body,
+            html_body,
+        )
+
+        if EMAIL_DELIVERY_MODE == "console":
+            logger.info(
+                "EMAIL_DELIVERY_MODE=console, email change OTP for %s is %s (valid for %s minutes)",
+                recipient_email,
+                otp_code,
+                expires_in_minutes,
+            )
+            return
+
+        EmailDeliveryService._send_via_smtp(message)

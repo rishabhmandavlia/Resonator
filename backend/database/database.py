@@ -11,9 +11,22 @@ from typing import Generator
 import os
 import logging
 
-from database.models import Base, Generation, OAuthIdentity, Project, ProjectShare, ProjectTemplate, SessionAccount, User
+from database.models import (
+    AuthSession,
+    Base,
+    Generation,
+    OAuthAuthorizationState,
+    OAuthIdentity,
+    PendingOAuthLink,
+    Project,
+    ProjectShare,
+    ProjectTemplate,
+    SessionAccount,
+    User,
+)
 
 logger = logging.getLogger(__name__)
+REMOVED_OAUTH_PROVIDERS = ("github",)
 
 # Get database URL from environment or use default SQLite for development
 DATABASE_URL = os.getenv(
@@ -61,7 +74,7 @@ def _is_placeholder_oauth_email(email: str | None) -> bool:
 def _is_trusted_identity_email(identity: OAuthIdentity) -> bool:
     if not identity.email:
         return False
-    return bool(identity.email_verified or identity.provider in {"google", "github"})
+    return bool(identity.email_verified or identity.provider in {"google"})
 
 
 def _merge_user_records(db: Session, primary_user: User, duplicate_user: User) -> None:
@@ -175,26 +188,15 @@ def _merge_user_records(db: Session, primary_user: User, duplicate_user: User) -
 
 
 def repair_auth_duplicates() -> None:
-    """Merge duplicate user records that should resolve to the same normalized email."""
+    """Normalize auth records without merging users solely because emails match."""
     try:
         with SessionLocal() as db:
             users = db.query(User).order_by(User.created_at.asc(), User.id.asc()).all()
-            canonical_by_email: dict[str, User] = {}
 
             for user in users:
                 normalized_email = _normalize_email_value(user.email)
-                if not normalized_email:
-                    continue
-
-                canonical_user = canonical_by_email.get(normalized_email)
-                if canonical_user is None:
-                    canonical_by_email[normalized_email] = user
-                    if user.email != normalized_email:
-                        user.email = normalized_email
-                    continue
-
-                if canonical_user.id != user.id:
-                    _merge_user_records(db, canonical_user, user)
+                if normalized_email and user.email != normalized_email:
+                    user.email = normalized_email
 
             identities = (
                 db.query(OAuthIdentity)
@@ -203,32 +205,9 @@ def repair_auth_duplicates() -> None:
                 .all()
             )
             for identity in identities:
-                if not _is_trusted_identity_email(identity):
-                    continue
-
                 normalized_email = _normalize_email_value(identity.email)
-                if not normalized_email:
-                    continue
-
-                target_user = (
-                    db.query(User)
-                    .filter(text("LOWER(email) = :normalized_email"))
-                    .params(normalized_email=normalized_email)
-                    .order_by(User.created_at.asc(), User.id.asc())
-                    .first()
-                )
-                source_user = db.query(User).filter(User.id == identity.user_id).first()
-                if source_user is None:
-                    continue
-
-                if target_user is None:
-                    source_user.email = normalized_email
-                    source_user.is_email_verified = source_user.is_email_verified or identity.email_verified
-                    source_user.is_verified = source_user.is_verified or identity.email_verified
-                    continue
-
-                if target_user.id != source_user.id:
-                    _merge_user_records(db, target_user, source_user)
+                if normalized_email and identity.email != normalized_email:
+                    identity.email = normalized_email
 
             users = db.query(User).all()
             for user in users:
@@ -255,6 +234,109 @@ def repair_auth_duplicates() -> None:
             db.commit()
     except Exception as exc:
         logger.warning("Auth duplicate repair warning: %s", exc)
+
+
+def purge_removed_oauth_provider_data() -> None:
+    """Remove persisted auth records for OAuth providers that are no longer supported."""
+    if not REMOVED_OAUTH_PROVIDERS:
+        return
+
+    try:
+        with SessionLocal() as db:
+            removed_provider_names = tuple(REMOVED_OAUTH_PROVIDERS)
+            removed_session_accounts = (
+                db.query(SessionAccount)
+                .filter(SessionAccount.provider.in_(removed_provider_names))
+                .all()
+            )
+            removed_account_ids = {account.id for account in removed_session_accounts}
+            affected_session_ids = {account.session_id for account in removed_session_accounts}
+
+            removed_identity_count = (
+                db.query(OAuthIdentity)
+                .filter(OAuthIdentity.provider.in_(removed_provider_names))
+                .count()
+            )
+            removed_pending_link_count = (
+                db.query(PendingOAuthLink)
+                .filter(PendingOAuthLink.provider.in_(removed_provider_names))
+                .count()
+            )
+            removed_auth_state_count = (
+                db.query(OAuthAuthorizationState)
+                .filter(OAuthAuthorizationState.provider.in_(removed_provider_names))
+                .count()
+            )
+
+            if (
+                not removed_account_ids
+                and removed_identity_count == 0
+                and removed_pending_link_count == 0
+                and removed_auth_state_count == 0
+            ):
+                return
+
+            deleted_session_count = 0
+            repointed_session_count = 0
+
+            if affected_session_ids:
+                affected_sessions = (
+                    db.query(AuthSession)
+                    .filter(AuthSession.id.in_(tuple(affected_session_ids)))
+                    .all()
+                )
+                for session in affected_sessions:
+                    remaining_accounts = [
+                        account
+                        for account in session.accounts
+                        if account.id not in removed_account_ids
+                        and account.provider not in removed_provider_names
+                    ]
+
+                    if not remaining_accounts:
+                        db.delete(session)
+                        deleted_session_count += 1
+                        continue
+
+                    preferred_account = next(
+                        (account for account in remaining_accounts if account.is_valid),
+                        remaining_accounts[0],
+                    )
+                    if session.active_account_id != preferred_account.id:
+                        session.active_account_id = preferred_account.id
+                        repointed_session_count += 1
+                    session.updated_at = datetime.utcnow()
+
+                db.flush()
+
+            removed_session_account_count = (
+                db.query(SessionAccount)
+                .filter(SessionAccount.provider.in_(removed_provider_names))
+                .delete(synchronize_session=False)
+            )
+            db.query(PendingOAuthLink).filter(
+                PendingOAuthLink.provider.in_(removed_provider_names)
+            ).delete(synchronize_session=False)
+            db.query(OAuthAuthorizationState).filter(
+                OAuthAuthorizationState.provider.in_(removed_provider_names)
+            ).delete(synchronize_session=False)
+            db.query(OAuthIdentity).filter(
+                OAuthIdentity.provider.in_(removed_provider_names)
+            ).delete(synchronize_session=False)
+            db.commit()
+
+            logger.info(
+                "Purged legacy OAuth provider data for %s: %s session accounts, %s identities, %s pending links, %s auth states, %s sessions deleted, %s sessions repointed",
+                ", ".join(removed_provider_names),
+                removed_session_account_count,
+                removed_identity_count,
+                removed_pending_link_count,
+                removed_auth_state_count,
+                deleted_session_count,
+                repointed_session_count,
+            )
+    except Exception as exc:
+        logger.warning("Removed OAuth provider cleanup warning: %s", exc)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -390,6 +472,7 @@ def repair_schema() -> None:
         repair_voice_id_column("generation_drafts")
         repair_voice_id_column("generations")
         ensure_string_column("generations", "title", 255)
+        ensure_string_column("oauth_authorization_states", "link_user_id", 36)
         ensure_boolean_column("projects", "is_system", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "is_email_verified", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "has_email_auth", "FALSE" if engine.dialect.name == "postgresql" else "0")
@@ -413,6 +496,7 @@ def repair_schema() -> None:
                 )
 
         repair_auth_duplicates()
+        purge_removed_oauth_provider_data()
         ensure_unique_index("uq_users_email_normalized", "users", "LOWER(email)")
         ensure_unique_index("uq_oauth_identities_user_provider_idx", "oauth_identities", "user_id, provider")
     except Exception as e:
