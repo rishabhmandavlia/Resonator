@@ -3,7 +3,7 @@
  * Manage TTS projects integrated with backend API
  */
 
-import { useEffect, useState } from "react";
+import { type MouseEvent, useEffect, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
@@ -20,6 +20,16 @@ import { apiClient, type ProjectSummary } from "../services/api";
 import { useAuth } from "../services/auth";
 import { KokoroStudio } from "./KokoroStudio";
 import { Alert, AlertDescription } from "./ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
@@ -42,7 +52,7 @@ const EMPTY_FORM = {
 };
 
 export function Projects() {
-  const { hasValidActiveAccount, isLoading: authLoading } = useAuth();
+  const { hasValidActiveAccount, isLoading: authLoading, user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +64,10 @@ export function Projects() {
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editFormData, setEditFormData] = useState(EMPTY_FORM);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [projectPendingDelete, setProjectPendingDelete] =
+    useState<Project | null>(null);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
@@ -129,6 +143,11 @@ export function Projects() {
   };
 
   const openEditProject = (project: Project) => {
+    if (project.user_id !== user?.id) {
+      setError("Only the project owner can edit this project.");
+      return;
+    }
+
     setEditingProject(project);
     setEditFormData({
       name: project.name,
@@ -174,13 +193,25 @@ export function Projects() {
     }
   };
 
-  const handleDeleteProject = async (projectId: string) => {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this project and its saved generations?",
-    );
-    if (!confirmed) {
+  const requestDeleteProject = (project: Project) => {
+    if (project.user_id !== user?.id) {
+      setError("Only the project owner can delete this project.");
       return;
     }
+
+    setDeleteError(null);
+    setProjectPendingDelete(project);
+  };
+
+  const handleDeleteProject = async () => {
+    if (!projectPendingDelete) {
+      return;
+    }
+
+    const projectId = projectPendingDelete.id;
+
+    setIsDeletingProject(true);
+    setDeleteError(null);
 
     try {
       setError(null);
@@ -198,12 +229,20 @@ export function Projects() {
         setEditingProject(null);
       }
 
+      setProjectPendingDelete(null);
       setSuccess("Project deleted successfully!");
       setTimeout(() => setSuccess(null), 2000);
     } catch (err: any) {
-      setError(err?.detail || "Failed to delete project");
+      const message = err?.detail || "Failed to delete project";
+      setDeleteError(message);
+      setError(message);
+    } finally {
+      setIsDeletingProject(false);
     }
   };
+
+  const isOwnedProject = (project: Project | null) =>
+    project !== null && project.user_id === user?.id;
 
   const getColorForProject = (index: number) => {
     const colors = [
@@ -358,88 +397,102 @@ export function Projects() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {projects.map((project, index) => (
-                    <Card
-                      key={project.id}
-                      className="group cursor-pointer transition-all hover:border-primary/50"
-                    >
-                      <CardContent className="space-y-6 p-6">
-                        <div className="flex items-start justify-between">
+                  {projects.map((project, index) => {
+                    const isOwned = isOwnedProject(project);
+
+                    return (
+                      <Card
+                        key={project.id}
+                        className="group cursor-pointer transition-all hover:border-primary/50"
+                      >
+                        <CardContent className="space-y-6 p-6">
+                          <div className="flex items-start justify-between">
+                            <button
+                              type="button"
+                              className={`flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md ${getColorForProject(index)}`}
+                              onClick={() => setSelectedProject(project)}
+                              title="Open project"
+                            >
+                              <FolderKanban className="h-6 w-6" />
+                            </button>
+
+                            {isOwned ? (
+                              <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-muted-foreground"
+                                  onClick={() => openEditProject(project)}
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
+                                  onClick={() => requestDeleteProject(project)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <Badge variant="outline">Shared</Badge>
+                            )}
+                          </div>
+
                           <button
                             type="button"
-                            className={`flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md ${getColorForProject(index)}`}
                             onClick={() => setSelectedProject(project)}
-                            title="Open project"
+                            className="text-left"
                           >
-                            <FolderKanban className="h-6 w-6" />
+                            <h3
+                              className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
+                              title={project.name}
+                            >
+                              {project.name}
+                            </h3>
+                            {project.description && (
+                              <p className="mt-1 line-clamp-2 text-sm text-gray-600">
+                                {project.description}
+                              </p>
+                            )}
+                            <div className="mt-2 flex items-center gap-2">
+                              <Badge
+                                variant="secondary"
+                                className="bg-secondary/50 text-xs font-normal"
+                              >
+                                Workspace Ready
+                              </Badge>
+                              {!isOwned && (
+                                <Badge variant="outline">Shared</Badge>
+                              )}
+                            </div>
                           </button>
 
-                          <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                          <div className="flex items-center justify-between border-t border-border/50 pt-4">
+                            <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                              <Clock className="h-4 w-4" />
+                              {formatDistanceToNow(
+                                new Date(project.updated_at),
+                                {
+                                  addSuffix: true,
+                                },
+                              )}
+                            </div>
+
                             <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-muted-foreground"
-                              onClick={() => openEditProject(project)}
+                              size="sm"
+                              className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
+                              onClick={() => setSelectedProject(project)}
                             >
-                              <Edit2 className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
-                              onClick={() => handleDeleteProject(project.id)}
-                            >
-                              <Trash2 className="h-4 w-4" />
+                              <Maximize2 className="h-4 w-4" />
+                              Open
                             </Button>
                           </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => setSelectedProject(project)}
-                          className="text-left"
-                        >
-                          <h3
-                            className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
-                            title={project.name}
-                          >
-                            {project.name}
-                          </h3>
-                          {project.description && (
-                            <p className="mt-1 line-clamp-2 text-sm text-gray-600">
-                              {project.description}
-                            </p>
-                          )}
-                          <div className="mt-2 flex items-center gap-2">
-                            <Badge
-                              variant="secondary"
-                              className="bg-secondary/50 text-xs font-normal"
-                            >
-                              Workspace Ready
-                            </Badge>
-                          </div>
-                        </button>
-
-                        <div className="flex items-center justify-between border-t border-border/50 pt-4">
-                          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                            <Clock className="h-4 w-4" />
-                            {formatDistanceToNow(new Date(project.updated_at), {
-                              addSuffix: true,
-                            })}
-                          </div>
-
-                          <Button
-                            size="sm"
-                            className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
-                            onClick={() => setSelectedProject(project)}
-                          >
-                            <Maximize2 className="h-4 w-4" />
-                            Open
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -473,27 +526,34 @@ export function Projects() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  {!isOwnedProject(selectedProject) && (
+                    <Badge variant="outline">Shared Project</Badge>
+                  )}
                   <Badge variant="secondary" className="bg-secondary/60">
                     Updated{" "}
                     {formatDistanceToNow(new Date(selectedProject.updated_at), {
                       addSuffix: true,
                     })}
                   </Badge>
-                  <Button
-                    variant="outline"
-                    onClick={() => openEditProject(selectedProject)}
-                  >
-                    <Edit2 className="mr-2 h-4 w-4" />
-                    Edit Project
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                    onClick={() => handleDeleteProject(selectedProject.id)}
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete Project
-                  </Button>
+                  {isOwnedProject(selectedProject) && (
+                    <>
+                      <Button
+                        variant="outline"
+                        onClick={() => openEditProject(selectedProject)}
+                      >
+                        <Edit2 className="mr-2 h-4 w-4" />
+                        Edit Project
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                        onClick={() => requestDeleteProject(selectedProject)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete Project
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -569,6 +629,51 @@ export function Projects() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={projectPendingDelete !== null}
+        onOpenChange={(open: boolean) => {
+          if (!open && !isDeletingProject) {
+            setProjectPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete project</AlertDialogTitle>
+            <AlertDialogDescription>
+              {projectPendingDelete
+                ? `Delete ${projectPendingDelete.name} and its saved generations? This action cannot be undone.`
+                : "Delete this project and its saved generations? This action cannot be undone."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {deleteError && (
+            <Alert className="border border-red-200 bg-red-50">
+              <AlertDescription className="text-red-800">
+                {deleteError}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingProject}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              disabled={isDeletingProject}
+              onClick={(event: MouseEvent<HTMLButtonElement>) => {
+                event.preventDefault();
+                void handleDeleteProject();
+              }}
+            >
+              {isDeletingProject ? "Deleting..." : "Delete Project"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

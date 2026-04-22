@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
   Download,
@@ -13,6 +13,16 @@ import {
 } from "lucide-react";
 
 import { apiClient, type VoiceOption } from "../services/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import {
@@ -77,6 +87,9 @@ export function AudioLibrary({
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDeleteItem, setPendingDeleteItem] =
+    useState<AudioLibraryItem | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<AudioLibraryItem | null>(
     null,
   );
@@ -209,29 +222,35 @@ export function AudioLibrary({
     }
   };
 
-  const handleDelete = async (item: AudioLibraryItem) => {
+  const requestDelete = (item: AudioLibraryItem) => {
     if (!onDelete) {
       return;
     }
 
-    const confirmed = window.confirm(
-      "Delete this generation from your history?",
-    );
-    if (!confirmed) {
+    setDeleteError(null);
+    setPendingDeleteItem(item);
+  };
+
+  const handleDelete = async () => {
+    if (!onDelete || !pendingDeleteItem) {
       return;
     }
 
-    setDeletingId(item.id);
+    setDeletingId(pendingDeleteItem.id);
+    setDeleteError(null);
     setActionError(null);
 
     try {
-      await onDelete(item);
+      await onDelete(pendingDeleteItem);
 
-      if (playingId === item.id) {
+      if (playingId === pendingDeleteItem.id) {
         stopCurrentAudio();
       }
+
+      setPendingDeleteItem(null);
     } catch (error) {
       console.error("Failed to delete generation:", error);
+      setDeleteError("Failed to delete generation.");
       setActionError("Failed to delete generation.");
     } finally {
       setDeletingId(null);
@@ -381,7 +400,7 @@ export function AudioLibrary({
                             variant="outline"
                             size="sm"
                             className="gap-2 text-red-600 hover:bg-red-50 hover:text-red-700"
-                            onClick={() => handleDelete(item)}
+                            onClick={() => requestDelete(item)}
                             disabled={deletingId === item.id}
                           >
                             {deletingId === item.id ? (
@@ -419,6 +438,45 @@ export function AudioLibrary({
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={pendingDeleteItem !== null}
+        onOpenChange={(open: boolean) => {
+          if (!open && deletingId === null) {
+            setPendingDeleteItem(null);
+            setDeleteError(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete generation</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDeleteItem
+                ? `Delete this saved generation from your history? ${pendingDeleteItem.text_prompt || pendingDeleteItem.text}`
+                : "Delete this saved generation from your history?"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {deleteError && <p className="text-sm text-red-600">{deleteError}</p>}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingId !== null}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              disabled={deletingId !== null}
+              onClick={(event: MouseEvent<HTMLButtonElement>) => {
+                event.preventDefault();
+                void handleDelete();
+              }}
+            >
+              {deletingId !== null ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

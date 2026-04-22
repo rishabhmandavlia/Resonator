@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from datetime import datetime
+from pathlib import Path
 import json
 import uuid
 from typing import List, Optional, Dict, Any
@@ -29,6 +30,32 @@ def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
 
 class ProjectService:
     """Service layer for all project management operations."""
+
+    @staticmethod
+    def _delete_generation_audio(audio_path: str | None) -> None:
+        if not audio_path:
+            return
+
+        normalized_path = audio_path.strip()
+        if not normalized_path:
+            return
+
+        try:
+            if normalized_path.startswith("generations/"):
+                from app.services.storage_service import SupabaseStorageService
+
+                SupabaseStorageService.delete_audio_file(normalized_path)
+                return
+
+            local_path = Path(normalized_path)
+            if local_path.exists():
+                local_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to clean up stored audio for generation path %s: %s",
+                normalized_path,
+                exc,
+            )
     
     # ==================== PROJECT OPERATIONS ====================
     
@@ -268,8 +295,11 @@ class ProjectService:
             if not generation:
                 return False
 
+            audio_path = generation.audio_path
+
             db.delete(generation)
             db.commit()
+            ProjectService._delete_generation_audio(audio_path)
             return True
         except SQLAlchemyError as e:
             db.rollback()

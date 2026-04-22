@@ -102,11 +102,13 @@ def create_generation_record(
     project_id: str | uuid.UUID,
     user_id: str | uuid.UUID,
     text: str,
-    voice_id: str,
+    voice_id: str | None,
     speed: float,
     pitch: float,
     duration_seconds: float,
     audio_path: str,
+    file_format: str = "wav",
+    title: str | None = None,
 ) -> Generation:
     generation = Generation(
         project_id=parse_uuid(project_id),
@@ -117,7 +119,8 @@ def create_generation_record(
         pitch=pitch,
         duration_seconds=duration_seconds,
         audio_path=audio_path,
-        file_format="wav",
+        file_format=file_format,
+        title=title,
     )
     db.add(generation)
     db.commit()
@@ -418,10 +421,31 @@ def delete_project(
     """Delete a project."""
     try:
         project = ProjectService.get_project(db, project_id, current_user)
-        if not project_belongs_to_user(project, current_user):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
 
-        ProjectService.delete_project(db, project_id)
+        if not project_belongs_to_user(project, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the project owner can delete this project",
+            )
+
+        if project.is_system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="System projects cannot be deleted",
+            )
+
+        deleted = ProjectService.delete_project(db, project_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
         return None
     except HTTPException:
         raise
@@ -960,7 +984,7 @@ def generate_audio_standalone(
             voice_id=payload.voice_id,
             speed=payload.speed,
             pitch=payload.pitch,
-            project_id=None,
+            project_id=str(standalone_project.id),
         )
 
         generation = create_generation_record(
@@ -973,6 +997,7 @@ def generate_audio_standalone(
             pitch=payload.pitch,
             duration_seconds=duration,
             audio_path=audio_path,
+            title=payload.title,
         )
 
         response = build_generation_response(
@@ -1046,6 +1071,7 @@ def generate_audio(
             pitch=payload.pitch,
             duration_seconds=duration,
             audio_path=audio_path,
+            title=payload.title,
         )
 
         response = build_generation_response(

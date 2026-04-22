@@ -137,6 +137,37 @@ export interface StatusResponse {
   message: string;
 }
 
+export interface StoredAudioFile {
+  id: string;
+  projectId: string | null;
+  projectName: string | null;
+  fileName: string;
+  fileSizeBytes: number;
+  durationSeconds: number;
+  uploadedAt: string;
+  createdAt: string;
+  format: string;
+  audioUrl: string | null;
+  audioPath: string | null;
+  title: string | null;
+  textPrompt: string;
+  voiceId: string | null;
+  sourceType: string;
+}
+
+export interface StoredAudioFilesResponse {
+  quotaBytes: number;
+  usedBytes: number;
+  remainingBytes: number;
+  fileCount: number;
+  files: StoredAudioFile[];
+}
+
+export interface BulkDeleteStoredAudioResponse {
+  deletedIds: string[];
+  deletedCount: number;
+}
+
 type RawFilteredGenerationsResponse = {
   generations: RawGenerationResponse[];
   total_count: number;
@@ -241,6 +272,14 @@ function normalizeCurrentUserResponse(
   };
 }
 
+function normalizeStoredAudioFile(file: StoredAudioFile): StoredAudioFile {
+  return {
+    ...file,
+    uploadedAt: normalizeApiDate(file.uploadedAt),
+    createdAt: normalizeApiDate(file.createdAt),
+  };
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -257,10 +296,15 @@ class ApiClient {
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
-    const headers: HeadersInit = {
-      "Content-Type": "application/json",
-      ...options.headers,
-    };
+    const isFormDataBody =
+      typeof FormData !== "undefined" && options.body instanceof FormData;
+
+    const headers: HeadersInit = isFormDataBody
+      ? { ...options.headers }
+      : {
+          "Content-Type": "application/json",
+          ...options.headers,
+        };
 
     try {
       const response = await fetch(url, {
@@ -1106,6 +1150,114 @@ class ApiClient {
         normalizeGenerationResponse(generation),
       ),
     };
+  }
+
+  async listStoredAudioFiles(): Promise<StoredAudioFilesResponse> {
+    const response = await this.request<StoredAudioFilesResponse>(
+      "/api/audio/storage/files",
+      {
+        method: "GET",
+      },
+    );
+
+    return {
+      ...response,
+      files: response.files.map(normalizeStoredAudioFile),
+    };
+  }
+
+  async getStoredAudioFile(generationId: string): Promise<StoredAudioFile> {
+    const file = await this.request<StoredAudioFile>(
+      `/api/audio/storage/files/${generationId}`,
+      {
+        method: "GET",
+      },
+    );
+
+    return normalizeStoredAudioFile(file);
+  }
+
+  async deleteStoredAudioFile(generationId: string): Promise<void> {
+    return this.request(`/api/audio/storage/files/${generationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async bulkDeleteStoredAudioFiles(
+    generationIds: string[],
+  ): Promise<BulkDeleteStoredAudioResponse> {
+    return this.request<BulkDeleteStoredAudioResponse>(
+      "/api/audio/storage/files/bulk-delete",
+      {
+        method: "POST",
+        body: JSON.stringify({ generationIds }),
+      },
+    );
+  }
+
+  async uploadStoredAudio(
+    file: File,
+    onProgress?: (progress: number) => void,
+  ): Promise<StoredAudioFile> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append("file", file);
+
+      xhr.open("POST", `${this.baseUrl}/api/audio/storage/upload`);
+      xhr.withCredentials = true;
+
+      xhr.upload.onprogress = (event) => {
+        if (!onProgress || !event.lengthComputable) {
+          return;
+        }
+
+        const progress = Math.min(
+          100,
+          Math.round((event.loaded / event.total) * 100),
+        );
+        onProgress(progress);
+      };
+
+      xhr.onerror = () => {
+        reject({ detail: "Upload failed" } satisfies ApiError);
+      };
+
+      xhr.onload = () => {
+        const responseText = xhr.responseText || "";
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          let parsedError: ApiError = {};
+          try {
+            parsedError = responseText ? JSON.parse(responseText) : {};
+          } catch {
+            parsedError = { detail: responseText || "Upload failed" };
+          }
+
+          reject({
+            status: xhr.status,
+            detail:
+              parsedError.detail ||
+              parsedError.message ||
+              parsedError.error ||
+              "Upload failed",
+          } satisfies ApiError);
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(responseText) as StoredAudioFile;
+          onProgress?.(100);
+          resolve(normalizeStoredAudioFile(parsed));
+        } catch {
+          reject({
+            detail: "Upload completed with an invalid response",
+          } satisfies ApiError);
+        }
+      };
+
+      xhr.send(formData);
+    });
   }
 }
 

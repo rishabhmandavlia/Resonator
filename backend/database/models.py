@@ -239,6 +239,7 @@ class Generation(Base):
     duration_seconds = Column(Float, nullable=False, default=0.0, index=True)
     audio_path = Column(String(500), nullable=False)
     file_format = Column(String(20), nullable=False, default="wav")
+    title = Column(String(255), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     
     # Relationships
@@ -256,10 +257,6 @@ class Generation(Base):
     @property
     def audio_file_path(self):
         return self.audio_path
-
-    @property
-    def title(self):
-        return None
 
     @property
     def folder_id(self):

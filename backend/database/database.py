@@ -305,6 +305,37 @@ def repair_schema() -> None:
 
             logger.info("Added missing %s.%s boolean column", table_name, column_name)
 
+        def ensure_string_column(
+            table_name: str,
+            column_name: str,
+            length: int,
+        ) -> None:
+            if not inspector.has_table(table_name):
+                return
+
+            columns = {
+                column["name"]: column
+                for column in inspector.get_columns(table_name)
+            }
+            if column_name in columns:
+                return
+
+            if engine.dialect.name == "postgresql":
+                statement = (
+                    f"ALTER TABLE {table_name} "
+                    f"ADD COLUMN IF NOT EXISTS {column_name} VARCHAR({length})"
+                )
+            else:
+                statement = (
+                    f"ALTER TABLE {table_name} "
+                    f"ADD COLUMN {column_name} VARCHAR({length})"
+                )
+
+            with engine.begin() as connection:
+                connection.execute(text(statement))
+
+            logger.info("Added missing %s.%s string column", table_name, column_name)
+
         def ensure_unique_index(index_name: str, table_name: str, columns_sql: str) -> None:
             if not inspector.has_table(table_name):
                 return
@@ -358,6 +389,7 @@ def repair_schema() -> None:
 
         repair_voice_id_column("generation_drafts")
         repair_voice_id_column("generations")
+        ensure_string_column("generations", "title", 255)
         ensure_boolean_column("projects", "is_system", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "is_email_verified", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "has_email_auth", "FALSE" if engine.dialect.name == "postgresql" else "0")
