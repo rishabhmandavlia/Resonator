@@ -115,7 +115,7 @@ PROVIDER_DEFINITIONS: dict[str, OAuthProviderDefinition] = {
 }
 
 LOCAL_EMAIL_PROVIDER = "email"
-LOCAL_EMAIL_PROVIDER_LABEL = "Email"
+LOCAL_EMAIL_PROVIDER_LABEL = "Email & Password"
 REMOVED_PROVIDER_MESSAGES = {
     "github": "GitHub authentication has been removed. Please use Google or reset your password.",
 }
@@ -341,6 +341,9 @@ class OAuthService:
 
         session = db.query(AuthSession).filter(AuthSession.id == session_uuid).first()
         if session:
+            if not session.is_active:
+                return None
+
             OAuthService._normalize_session_active_account(session)
             session.last_seen_at = _utcnow()
         return session
@@ -352,6 +355,7 @@ class OAuthService:
             return session
 
         session = AuthSession(
+            is_active=True,
             user_agent=request.headers.get("user-agent"),
             ip_address=request.client.host if request.client else None,
             created_at=_utcnow(),
@@ -619,7 +623,7 @@ class OAuthService:
                 normalized_email,
                 profile.get("display_name"),
             ),
-            password_hash=OAuthService.build_password_placeholder(),
+            password_hash=None,
             is_active=True,
             is_admin=False,
             is_verified=True,
@@ -1378,7 +1382,7 @@ class OAuthService:
 
     @staticmethod
     def serialize_session(session: AuthSession | None) -> dict[str, Any]:
-        if session is None:
+        if session is None or not session.is_active:
             return {
                 "accounts": [],
                 "activeAccountId": None,
@@ -1468,6 +1472,7 @@ class OAuthService:
         existing_identity = OAuthService.get_identity_by_subject(db, provider, profile)
         normalized_email = OAuthService.normalize_email(profile.get("email"))
         email_owner = OAuthService.get_user_by_email(db, normalized_email)
+        email_is_trusted = OAuthService.is_profile_email_trusted(provider, profile)
         link_target_user = None
 
         if auth_state.link_user_id:
@@ -1490,12 +1495,13 @@ class OAuthService:
             existing_identity is None
             and link_target_user is None
             and email_owner is not None
+            and not email_is_trusted
         )
         requires_email_verification = (
             existing_identity is None
             and link_target_user is None
             and email_owner is None
-            and not OAuthService.is_profile_email_trusted(provider, profile)
+            and not email_is_trusted
         )
 
         if requires_explicit_link or requires_email_verification:
@@ -1532,6 +1538,13 @@ class OAuthService:
                 provider,
                 profile,
                 user=link_target_user,
+            )
+        elif email_owner is not None and email_is_trusted:
+            user, identity = OAuthService.link_verified_identity(
+                db,
+                provider,
+                profile,
+                user=email_owner,
             )
         elif existing_identity is not None:
             user = existing_identity.user
@@ -1904,5 +1917,19 @@ class OAuthService:
         if session is None:
             return
 
-        db.delete(session)
+        session.active_account_id = None
+        session.is_active = False
+        session.updated_at = _utcnow()
+        session.last_seen_at = _utcnow()
+
+        db.query(OAuthAuthorizationState).filter(
+            OAuthAuthorizationState.session_id == session.id,
+        ).delete(synchronize_session=False)
+        db.query(PendingOAuthLink).filter(
+            PendingOAuthLink.session_id == session.id,
+        ).delete(synchronize_session=False)
+        db.query(SessionAccount).filter(
+            SessionAccount.session_id == session.id,
+        ).delete(synchronize_session=False)
+
         db.commit()

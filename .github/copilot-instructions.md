@@ -201,7 +201,6 @@ backend/
   │   └── models.py        # SQLAlchemy models
   ├── models/              # ML model files
   │   └── kokoro/          # TTS models
-  └── scripts/             # Utility scripts
 
 frontend/
   ├── src/

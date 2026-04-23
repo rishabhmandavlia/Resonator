@@ -11,7 +11,7 @@ import uuid
 
 from app.services.project_service import ProjectService, STANDALONE_PROJECT_NAME
 from app.services.tts_service import TTSService
-from database.models import Project, Generation, ProjectFolder, AudioCollection, AudioTag, ProjectShare, GenerationDraft
+from database.models import Project, Generation, ProjectFolder, AudioCollection, AudioTag, ProjectShare
 from database.database import get_db
 from app.middleware.auth import get_current_user
 
@@ -251,33 +251,6 @@ class ShareResponse(BaseModel):
         from_attributes = True
     
     @field_serializer('id', 'project_id', 'shared_with_user_id')
-    def serialize_uuid(self, value):
-        if isinstance(value, uuid.UUID):
-            return str(value)
-        return value
-
-class DraftCreate(BaseModel):
-    text_prompt: str
-    voice_id: Optional[str] = None
-    speed: float = 1.0
-    pitch: float = 1.0
-    generation_id: Optional[str] = None
-
-class DraftResponse(BaseModel):
-    id: uuid.UUID
-    project_id: uuid.UUID
-    generation_id: Optional[uuid.UUID]
-    text_prompt: str
-    voice_id: Optional[str]
-    speed: float
-    pitch: float
-    saved_at: datetime
-    audio_url: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
-    
-    @field_serializer('id', 'project_id', 'generation_id', 'voice_id')
     def serialize_uuid(self, value):
         if isinstance(value, uuid.UUID):
             return str(value)
@@ -875,78 +848,6 @@ def revoke_share(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
     
     ProjectService.revoke_share(db, share_id)
-    return None
-
-# ==================== DRAFT ENDPOINTS ====================
-
-@router.get("/{project_id}/drafts", response_model=List[DraftResponse])
-def list_drafts(
-    project_id: str,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """List all drafts in a project."""
-    logger.info("GET /api/projects/%s/drafts called for user: %s", project_id, current_user)
-    try:
-        project = ProjectService.get_project(db, project_id, current_user)
-        if not project:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
-
-        drafts = ProjectService.get_drafts(db, project_id)
-        logger.info("Returning %s drafts for project %s", len(drafts), project_id)
-        return [
-            {
-                **DraftResponse.model_validate(draft, from_attributes=True).model_dump(),
-                "audio_url": (
-                    f"/api/audio/proxy?path={quote(draft.generation.audio_file_path, safe='')}"
-                    if draft.generation and draft.generation.audio_file_path
-                    else None
-                ),
-            }
-            for draft in drafts
-        ]
-    except HTTPException as exc:
-        logger.error(
-            "HTTP error in GET /api/projects/%s/drafts for user %s: %s",
-            project_id,
-            current_user,
-            exc.detail,
-            exc_info=True,
-        )
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception as exc:
-        logger.exception("Unhandled error in GET /api/projects/%s/drafts", project_id)
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
-
-@router.post("/{project_id}/drafts", response_model=DraftResponse, status_code=status.HTTP_201_CREATED)
-def save_draft(
-    project_id: str,
-    payload: DraftCreate,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Save a draft."""
-    project = ProjectService.get_project(db, project_id, current_user)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
-    
-    draft = ProjectService.save_draft(db, project_id, payload.text_prompt, payload.voice_id, 
-                                     payload.speed, payload.pitch, payload.generation_id)
-    return draft
-
-@router.delete("/{project_id}/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_draft(
-    project_id: str,
-    draft_id: str,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Delete a draft."""
-    project = ProjectService.get_project(db, project_id, current_user)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
-    
-    ProjectService.delete_draft(db, draft_id)
     return None
 
 # ==================== TTS GENERATION ENDPOINTS ====================

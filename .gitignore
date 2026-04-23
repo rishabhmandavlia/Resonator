@@ -68,8 +68,10 @@ database.txt
 commands.txt
 BACKEND_FIXES_SUMMARY.md
 BACKEND_REVIEW.md
+frontend/.typecheck-summary.txt
 
 
 # Misc
 logo.svg
 product-name.txt
+product-name.svg

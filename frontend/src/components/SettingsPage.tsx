@@ -55,6 +55,8 @@ type ProviderActionDialogState = {
   providerLabel: string;
 };
 
+type SettingsTab = "profile" | "security";
+
 const EMPTY_PROFILE_FORM = {
   displayName: "",
 };
@@ -121,6 +123,8 @@ export function SettingsPage() {
   const [emailForm, setEmailForm] = useState(EMPTY_EMAIL_FORM);
   const [passwordForm, setPasswordForm] = useState(EMPTY_PASSWORD_FORM);
   const [deleteForm, setDeleteForm] = useState(EMPTY_DELETE_FORM);
+  const [activeSettingsTab, setActiveSettingsTab] =
+    useState<SettingsTab>("profile");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isChangingEmail, setIsChangingEmail] = useState(false);
   const [emailChangeChallenge, setEmailChangeChallenge] =
@@ -191,7 +195,7 @@ export function SettingsPage() {
   }, [activeAccountId, hasValidActiveAccount]);
 
   useEffect(() => {
-    if (!currentUser?.has_email_auth) {
+    if (!currentUser) {
       setEmailValidationError(null);
       setValidatedEmailAddress(null);
       setIsCheckingEmailAvailability(false);
@@ -332,14 +336,22 @@ export function SettingsPage() {
   const linkedOauthProviderCount = oauthProviderStates.filter(
     (provider) => provider.connection?.isLinked,
   ).length;
+  const canEnableEmailPassword =
+    Boolean(currentUser) &&
+    !Boolean(currentUser?.has_email_auth) &&
+    linkedOauthProviderCount > 0;
+  const requiresCurrentPasswordForEmailChange = Boolean(
+    currentUser?.has_email_auth,
+  );
   const requiresProviderReauth = Boolean(currentUser?.has_email_auth);
   const normalizedNewEmail = normalizeEmailInput(emailForm.newEmail);
   const hasValidatedEmailChangeTarget =
     validatedEmailAddress === normalizedNewEmail;
   const canRequestEmailChangeCode =
-    Boolean(currentUser?.has_email_auth) &&
+    Boolean(currentUser) &&
     normalizedNewEmail.length > 0 &&
-    emailForm.currentPassword.trim().length > 0 &&
+    (!requiresCurrentPasswordForEmailChange ||
+      emailForm.currentPassword.trim().length > 0) &&
     !emailValidationError &&
     !isCheckingEmailAvailability &&
     hasValidatedEmailChangeTarget;
@@ -383,11 +395,7 @@ export function SettingsPage() {
   const handleEmailSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!currentUser?.has_email_auth) {
-      setNotice({
-        tone: "error",
-        message: "Email changes are only available for email/password accounts",
-      });
+    if (!currentUser) {
       return;
     }
 
@@ -422,7 +430,9 @@ export function SettingsPage() {
       setNotice(null);
       const challenge = await apiClient.startCurrentUserEmailChange(
         emailForm.newEmail.trim(),
-        emailForm.currentPassword,
+        requiresCurrentPasswordForEmailChange
+          ? emailForm.currentPassword
+          : undefined,
       );
       setEmailChangeChallenge(challenge);
       setEmailChangeOtp("");
@@ -507,6 +517,10 @@ export function SettingsPage() {
   ) => {
     event.preventDefault();
 
+    if (!currentUser) {
+      return;
+    }
+
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
       setNotice({
         tone: "error",
@@ -518,10 +532,15 @@ export function SettingsPage() {
     try {
       setIsChangingPassword(true);
       setNotice(null);
-      const response = await apiClient.changeCurrentUserPassword(
-        passwordForm.currentPassword,
-        passwordForm.newPassword,
-      );
+      const response = currentUser.has_email_auth
+        ? await apiClient.changeCurrentUserPassword(
+            passwordForm.currentPassword,
+            passwordForm.newPassword,
+          )
+        : await apiClient.setCurrentUserPassword(passwordForm.newPassword);
+      const updatedUser = await apiClient.getCurrentUser();
+      setCurrentUser(updatedUser);
+      await refreshSession();
       setPasswordForm(EMPTY_PASSWORD_FORM);
       setNotice({ tone: "success", message: response.message });
     } catch (err: any) {
@@ -754,12 +773,12 @@ export function SettingsPage() {
                           <div>
                             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                               <Mail className="h-4 w-4 text-slate-600" />
-                              Email and password
+                              Email & Password
                             </div>
                             <p className="mt-2 text-sm text-muted-foreground">
                               {currentUser.has_email_auth
                                 ? currentUser.email
-                                : "Not connected"}
+                                : "Password sign-in is not enabled for this account yet."}
                             </p>
                           </div>
                           <Badge
@@ -775,15 +794,33 @@ export function SettingsPage() {
                             }
                           >
                             {currentUser.has_email_auth
-                              ? "Connected"
-                              : "Not connected"}
+                              ? "Enabled"
+                              : "Not enabled"}
                           </Badge>
                         </div>
+                        {!currentUser.has_email_auth &&
+                          canEnableEmailPassword && (
+                            <div className="mt-4 flex justify-end">
+                              <Button
+                                type="button"
+                                className="bg-slate-900 text-white hover:bg-slate-800"
+                                onClick={() => setActiveSettingsTab("security")}
+                              >
+                                Set Password
+                              </Button>
+                            </div>
+                          )}
                       </div>
 
                       {oauthProviderStates.map((provider) => {
                         const connection = provider.connection;
                         const isConnected = connection?.isLinked === true;
+                        const hasProviderEmailMismatch =
+                          isConnected &&
+                          Boolean(connection?.providerEmail) &&
+                          Boolean(currentUser.email) &&
+                          connection?.providerEmail?.toLowerCase() !==
+                            currentUser.email.toLowerCase();
                         const canDisconnect =
                           isConnected &&
                           (currentUser.has_email_auth ||
@@ -810,6 +847,14 @@ export function SettingsPage() {
                                       "Connected without provider email"
                                     : "Not connected"}
                                 </p>
+                                {hasProviderEmailMismatch && (
+                                  <p className="mt-2 text-xs text-slate-600">
+                                    This {provider.displayName} account is
+                                    linked with {connection?.providerEmail},
+                                    while your primary account email is{" "}
+                                    {currentUser.email}.
+                                  </p>
+                                )}
                                 {isConnected && !canDisconnect && (
                                   <p className="mt-2 text-xs text-amber-700">
                                     Connect another login method before
@@ -860,7 +905,13 @@ export function SettingsPage() {
                 </CardContent>
               </Card>
 
-              <Tabs defaultValue="profile" className="min-w-0">
+              <Tabs
+                value={activeSettingsTab}
+                onValueChange={(value: string) =>
+                  setActiveSettingsTab(value as SettingsTab)
+                }
+                className="min-w-0"
+              >
                 <TabsList className="w-full justify-start sm:w-auto">
                   <TabsTrigger value="profile">Profile</TabsTrigger>
                   <TabsTrigger value="security">Security</TabsTrigger>
@@ -919,294 +970,302 @@ export function SettingsPage() {
                 </TabsContent>
 
                 <TabsContent value="security" className="mt-4 space-y-6">
-                  {currentUser.has_email_auth ? (
-                    <>
-                      <Card className="border-border/60 shadow-sm">
-                        <CardHeader>
-                          <CardTitle>Change email</CardTitle>
-                          <CardDescription>
-                            Verify the new address with a one-time code before
-                            we update your password-based sign-in email.
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-5">
-                          <form
-                            className="space-y-5"
-                            onSubmit={handleEmailSubmit}
+                  <Card className="border-border/60 shadow-sm">
+                    <CardHeader>
+                      <CardTitle>Change email</CardTitle>
+                      <CardDescription>
+                        Verify the new address with a one-time code before we
+                        update your primary account email.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-5">
+                      <form className="space-y-5" onSubmit={handleEmailSubmit}>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-foreground">
+                            New email
+                          </label>
+                          <Input
+                            type="email"
+                            value={emailForm.newEmail}
+                            onChange={(event) =>
+                              handleEmailInputChange(event.target.value)
+                            }
+                            disabled={isChangingEmail}
+                            className={ELEVATED_INPUT_CLASS_NAME}
+                          />
+                          {isCheckingEmailAvailability ? (
+                            <p className="text-xs text-muted-foreground">
+                              Checking email availability...
+                            </p>
+                          ) : emailValidationError ? (
+                            <p className="text-xs text-red-600">
+                              {emailValidationError}
+                            </p>
+                          ) : hasValidatedEmailChangeTarget ? (
+                            <p className="text-xs text-emerald-700">
+                              Email is available. You can send a verification
+                              code.
+                            </p>
+                          ) : null}
+                        </div>
+
+                        {currentUser.has_email_auth && (
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-foreground">
+                              Current password
+                            </label>
+                            <Input
+                              type="password"
+                              value={emailForm.currentPassword}
+                              onChange={(event) =>
+                                setEmailForm((current) => ({
+                                  ...current,
+                                  currentPassword: event.target.value,
+                                }))
+                              }
+                              disabled={isChangingEmail}
+                              className={ELEVATED_INPUT_CLASS_NAME}
+                            />
+                          </div>
+                        )}
+
+                        <Alert className="border-sky-200 bg-sky-50 text-sky-950">
+                          <ShieldCheck className="h-4 w-4" />
+                          <AlertTitle>
+                            Connected login methods stay linked
+                          </AlertTitle>
+                          <AlertDescription>
+                            Changing your email updates the account email used
+                            for password sign-in, while connected providers stay
+                            linked to this account.
+                          </AlertDescription>
+                        </Alert>
+
+                        <div className="flex justify-end">
+                          <Button
+                            type="submit"
+                            disabled={
+                              isChangingEmail || !canRequestEmailChangeCode
+                            }
                           >
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-foreground">
-                                New email
-                              </label>
-                              <Input
-                                type="email"
-                                value={emailForm.newEmail}
-                                onChange={(event) =>
-                                  handleEmailInputChange(event.target.value)
-                                }
-                                disabled={isChangingEmail}
-                                className={ELEVATED_INPUT_CLASS_NAME}
-                              />
-                              {isCheckingEmailAvailability ? (
-                                <p className="text-xs text-muted-foreground">
-                                  Checking email availability...
-                                </p>
-                              ) : emailValidationError ? (
-                                <p className="text-xs text-red-600">
-                                  {emailValidationError}
-                                </p>
-                              ) : hasValidatedEmailChangeTarget ? (
-                                <p className="text-xs text-emerald-700">
-                                  Email is available. You can send a
-                                  verification code.
-                                </p>
-                              ) : null}
+                            {isChangingEmail
+                              ? "Sending..."
+                              : isCheckingEmailAvailability
+                                ? "Checking..."
+                                : emailChangeChallenge
+                                  ? "Send new code"
+                                  : "Send verification code"}
+                          </Button>
+                        </div>
+                      </form>
+
+                      {emailChangeChallenge && (
+                        <div
+                          ref={emailVerificationSectionRef}
+                          className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-5"
+                        >
+                          <div className="space-y-4">
+                            <div className="space-y-1">
+                              <p className="text-sm font-semibold text-emerald-950">
+                                Verify new email
+                              </p>
+                              <p className="text-sm text-emerald-900">
+                                {emailChangeChallenge.message}
+                              </p>
+                              <p className="text-sm text-emerald-900">
+                                We sent a 6-digit code to{" "}
+                                {emailChangeChallenge.email}.
+                              </p>
                             </div>
 
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-foreground">
-                                Current password
-                              </label>
-                              <Input
-                                type="password"
-                                value={emailForm.currentPassword}
-                                onChange={(event) =>
-                                  setEmailForm((current) => ({
-                                    ...current,
-                                    currentPassword: event.target.value,
-                                  }))
-                                }
-                                disabled={isChangingEmail}
-                                className={ELEVATED_INPUT_CLASS_NAME}
-                              />
-                            </div>
-
-                            <Alert className="border-sky-200 bg-sky-50 text-sky-950">
-                              <ShieldCheck className="h-4 w-4" />
-                              <AlertTitle>
-                                Connected login methods stay linked
-                              </AlertTitle>
-                              <AlertDescription>
-                                Changing your email will not affect your
-                                connected login methods.
-                              </AlertDescription>
-                            </Alert>
-
-                            <div className="flex justify-end">
-                              <Button
-                                type="submit"
-                                disabled={
-                                  isChangingEmail || !canRequestEmailChangeCode
-                                }
-                              >
-                                {isChangingEmail
-                                  ? "Sending..."
-                                  : isCheckingEmailAvailability
-                                    ? "Checking..."
-                                    : emailChangeChallenge
-                                      ? "Send new code"
-                                      : "Send verification code"}
-                              </Button>
-                            </div>
-                          </form>
-
-                          {emailChangeChallenge && (
-                            <div
-                              ref={emailVerificationSectionRef}
-                              className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-5"
+                            <form
+                              className="space-y-4"
+                              onSubmit={handleVerifyEmailChange}
                             >
-                              <div className="space-y-4">
-                                <div className="space-y-1">
-                                  <p className="text-sm font-semibold text-emerald-950">
-                                    Verify new email
-                                  </p>
-                                  <p className="text-sm text-emerald-900">
-                                    {emailChangeChallenge.message}
-                                  </p>
-                                  <p className="text-sm text-emerald-900">
-                                    We sent a 6-digit code to{" "}
-                                    {emailChangeChallenge.email}.
-                                  </p>
-                                </div>
-
-                                <form
-                                  className="space-y-4"
-                                  onSubmit={handleVerifyEmailChange}
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium text-foreground">
+                                  Verification code
+                                </label>
+                                <InputOTP
+                                  value={emailChangeOtp}
+                                  onChange={setEmailChangeOtp}
+                                  maxLength={6}
+                                  autoFocus
+                                  disabled={isVerifyingEmailChange}
                                 >
-                                  <div className="space-y-2">
-                                    <label className="text-sm font-medium text-foreground">
-                                      Verification code
-                                    </label>
-                                    <InputOTP
-                                      value={emailChangeOtp}
-                                      onChange={setEmailChangeOtp}
-                                      maxLength={6}
-                                      autoFocus
-                                      disabled={isVerifyingEmailChange}
-                                    >
-                                      <InputOTPGroup>
-                                        <InputOTPSlot index={0} />
-                                        <InputOTPSlot index={1} />
-                                        <InputOTPSlot index={2} />
-                                      </InputOTPGroup>
-                                      <InputOTPSeparator />
-                                      <InputOTPGroup>
-                                        <InputOTPSlot index={3} />
-                                        <InputOTPSlot index={4} />
-                                        <InputOTPSlot index={5} />
-                                      </InputOTPGroup>
-                                    </InputOTP>
-                                  </div>
-
-                                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                    <p className="text-sm text-emerald-900/80">
-                                      {emailChangeResendRemainingSeconds > 0
-                                        ? `Resend available in ${formatCountdown(emailChangeResendRemainingSeconds)}`
-                                        : "Didn't receive the code? You can resend it now."}
-                                    </p>
-
-                                    <div className="flex flex-wrap gap-2">
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        onClick={clearEmailChangeChallenge}
-                                        disabled={
-                                          isVerifyingEmailChange ||
-                                          isResendingEmailChange
-                                        }
-                                      >
-                                        Use different email
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        onClick={() =>
-                                          void handleResendEmailChange()
-                                        }
-                                        disabled={
-                                          emailChangeResendRemainingSeconds >
-                                            0 ||
-                                          isResendingEmailChange ||
-                                          isVerifyingEmailChange
-                                        }
-                                      >
-                                        {isResendingEmailChange
-                                          ? "Resending..."
-                                          : "Resend code"}
-                                      </Button>
-                                      <Button
-                                        type="submit"
-                                        disabled={
-                                          emailChangeOtp.length !== 6 ||
-                                          isVerifyingEmailChange
-                                        }
-                                      >
-                                        {isVerifyingEmailChange
-                                          ? "Verifying..."
-                                          : "Verify and update email"}
-                                      </Button>
-                                    </div>
-                                  </div>
-                                </form>
-                              </div>
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-
-                      <Card className="border-border/60 shadow-sm">
-                        <CardHeader>
-                          <CardTitle>Change password</CardTitle>
-                          <CardDescription>
-                            Use a strong password with at least 8 characters.
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <form
-                            className="space-y-5"
-                            onSubmit={handlePasswordSubmit}
-                          >
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-foreground">
-                                Current password
-                              </label>
-                              <Input
-                                type="password"
-                                value={passwordForm.currentPassword}
-                                onChange={(event) =>
-                                  setPasswordForm((current) => ({
-                                    ...current,
-                                    currentPassword: event.target.value,
-                                  }))
-                                }
-                                disabled={isChangingPassword}
-                                className={ELEVATED_INPUT_CLASS_NAME}
-                              />
-                            </div>
-
-                            <div className="grid gap-5 md:grid-cols-2">
-                              <div className="space-y-2">
-                                <label className="text-sm font-medium text-foreground">
-                                  New password
-                                </label>
-                                <Input
-                                  type="password"
-                                  value={passwordForm.newPassword}
-                                  onChange={(event) =>
-                                    setPasswordForm((current) => ({
-                                      ...current,
-                                      newPassword: event.target.value,
-                                    }))
-                                  }
-                                  disabled={isChangingPassword}
-                                  className={ELEVATED_INPUT_CLASS_NAME}
-                                />
+                                  <InputOTPGroup>
+                                    <InputOTPSlot index={0} />
+                                    <InputOTPSlot index={1} />
+                                    <InputOTPSlot index={2} />
+                                  </InputOTPGroup>
+                                  <InputOTPSeparator />
+                                  <InputOTPGroup>
+                                    <InputOTPSlot index={3} />
+                                    <InputOTPSlot index={4} />
+                                    <InputOTPSlot index={5} />
+                                  </InputOTPGroup>
+                                </InputOTP>
                               </div>
 
-                              <div className="space-y-2">
-                                <label className="text-sm font-medium text-foreground">
-                                  Confirm new password
-                                </label>
-                                <Input
-                                  type="password"
-                                  value={passwordForm.confirmPassword}
-                                  onChange={(event) =>
-                                    setPasswordForm((current) => ({
-                                      ...current,
-                                      confirmPassword: event.target.value,
-                                    }))
-                                  }
-                                  disabled={isChangingPassword}
-                                  className={ELEVATED_INPUT_CLASS_NAME}
-                                />
-                              </div>
-                            </div>
+                              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                <p className="text-sm text-emerald-900/80">
+                                  {emailChangeResendRemainingSeconds > 0
+                                    ? `Resend available in ${formatCountdown(emailChangeResendRemainingSeconds)}`
+                                    : "Didn't receive the code? You can resend it now."}
+                                </p>
 
-                            <div className="flex justify-end">
-                              <Button
-                                type="submit"
-                                disabled={isChangingPassword}
-                              >
-                                {isChangingPassword
-                                  ? "Updating..."
-                                  : "Update password"}
-                              </Button>
-                            </div>
-                          </form>
-                        </CardContent>
-                      </Card>
-                    </>
-                  ) : (
-                    <Alert className="border-sky-200 bg-sky-50 text-sky-950">
-                      <KeyRound className="h-4 w-4" />
-                      <AlertTitle>Password settings unavailable</AlertTitle>
-                      <AlertDescription>
-                        This account currently signs in through connected
-                        providers only, so email and password changes do not
-                        apply.
-                      </AlertDescription>
-                    </Alert>
-                  )}
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={clearEmailChangeChallenge}
+                                    disabled={
+                                      isVerifyingEmailChange ||
+                                      isResendingEmailChange
+                                    }
+                                  >
+                                    Use different email
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() =>
+                                      void handleResendEmailChange()
+                                    }
+                                    disabled={
+                                      emailChangeResendRemainingSeconds > 0 ||
+                                      isResendingEmailChange ||
+                                      isVerifyingEmailChange
+                                    }
+                                  >
+                                    {isResendingEmailChange
+                                      ? "Resending..."
+                                      : "Resend code"}
+                                  </Button>
+                                  <Button
+                                    type="submit"
+                                    disabled={
+                                      emailChangeOtp.length !== 6 ||
+                                      isVerifyingEmailChange
+                                    }
+                                  >
+                                    {isVerifyingEmailChange
+                                      ? "Verifying..."
+                                      : "Verify and update email"}
+                                  </Button>
+                                </div>
+                              </div>
+                            </form>
+                          </div>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-border/60 shadow-sm">
+                    <CardHeader>
+                      <CardTitle>
+                        {currentUser.has_email_auth
+                          ? "Change password"
+                          : "Set password"}
+                      </CardTitle>
+                      <CardDescription>
+                        {currentUser.has_email_auth
+                          ? "Use a strong password with at least 8 characters."
+                          : "Enable email/password sign-in for this same account without creating a second user."}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form
+                        className="space-y-5"
+                        onSubmit={handlePasswordSubmit}
+                      >
+                        {currentUser.has_email_auth && (
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-foreground">
+                              Current password
+                            </label>
+                            <Input
+                              type="password"
+                              value={passwordForm.currentPassword}
+                              onChange={(event) =>
+                                setPasswordForm((current) => ({
+                                  ...current,
+                                  currentPassword: event.target.value,
+                                }))
+                              }
+                              disabled={isChangingPassword}
+                              className={ELEVATED_INPUT_CLASS_NAME}
+                            />
+                          </div>
+                        )}
+
+                        <div className="grid gap-5 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-foreground">
+                              New password
+                            </label>
+                            <Input
+                              type="password"
+                              value={passwordForm.newPassword}
+                              onChange={(event) =>
+                                setPasswordForm((current) => ({
+                                  ...current,
+                                  newPassword: event.target.value,
+                                }))
+                              }
+                              disabled={isChangingPassword}
+                              className={ELEVATED_INPUT_CLASS_NAME}
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-foreground">
+                              Confirm new password
+                            </label>
+                            <Input
+                              type="password"
+                              value={passwordForm.confirmPassword}
+                              onChange={(event) =>
+                                setPasswordForm((current) => ({
+                                  ...current,
+                                  confirmPassword: event.target.value,
+                                }))
+                              }
+                              disabled={isChangingPassword}
+                              className={ELEVATED_INPUT_CLASS_NAME}
+                            />
+                          </div>
+                        </div>
+
+                        {!currentUser.has_email_auth && (
+                          <Alert className="border-sky-200 bg-sky-50 text-sky-950">
+                            <KeyRound className="h-4 w-4" />
+                            <AlertTitle>
+                              Email & Password will stay on this account
+                            </AlertTitle>
+                            <AlertDescription>
+                              Setting a password enables email/password login
+                              for {currentUser.email} without disconnecting your
+                              existing providers.
+                            </AlertDescription>
+                          </Alert>
+                        )}
+
+                        <div className="flex justify-end">
+                          <Button type="submit" disabled={isChangingPassword}>
+                            {isChangingPassword
+                              ? currentUser.has_email_auth
+                                ? "Updating..."
+                                : "Saving..."
+                              : currentUser.has_email_auth
+                                ? "Update password"
+                                : "Set password"}
+                          </Button>
+                        </div>
+                      </form>
+                    </CardContent>
+                  </Card>
 
                   <Card className="border-red-200 shadow-sm">
                     <CardHeader>

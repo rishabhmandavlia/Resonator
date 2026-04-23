@@ -28,21 +28,6 @@ export interface VoiceOption {
   gender: string;
 }
 
-export interface DraftResponse {
-  id: string;
-  project_id: string;
-  generation_id: string | null;
-  text_prompt: string;
-  voice_id: string | null;
-  speed: number;
-  pitch: number;
-  saved_at: string;
-  created_at: string;
-  audio_url?: string | null;
-  status: "success" | "pending" | "failed";
-  duration_seconds: number | null;
-}
-
 export interface GenerationResponse {
   id: string;
   project_id: string | null;
@@ -181,21 +166,6 @@ type RawFilteredGenerationsResponse = {
   limit: number;
 };
 
-type RawDraftResponse = {
-  id: string;
-  project_id: string;
-  generation_id: string | null;
-  text_prompt: string;
-  voice_id: string | null;
-  speed: number;
-  pitch: number;
-  saved_at: string;
-  created_at?: string;
-  audio_url?: string | null;
-  status?: "success" | "pending" | "failed";
-  duration_seconds?: number | null;
-};
-
 type RawGenerationResponse = Partial<GenerationResponse> & {
   id: string;
   user_id: string;
@@ -224,20 +194,6 @@ function normalizeProjectResponse(project: ProjectSummary): ProjectSummary {
     ...project,
     created_at: normalizeApiDate(project.created_at),
     updated_at: normalizeApiDate(project.updated_at),
-  };
-}
-
-function normalizeDraftResponse(draft: RawDraftResponse): DraftResponse {
-  const createdAt = normalizeApiDate(draft.created_at || draft.saved_at);
-
-  return {
-    ...draft,
-    created_at: createdAt,
-    status: draft.status || (draft.audio_url ? "success" : "pending"),
-    duration_seconds:
-      typeof draft.duration_seconds === "number"
-        ? draft.duration_seconds
-        : null,
   };
 }
 
@@ -542,21 +498,24 @@ class ApiClient {
 
   async startCurrentUserEmailChange(
     newEmail: string,
-    currentPassword: string,
+    currentPassword?: string,
   ): Promise<RegistrationChallengeResponse> {
-    return this.request<RegistrationChallengeResponse>("/api/auth/me/email", {
-      method: "POST",
-      body: JSON.stringify({
-        new_email: newEmail,
-        current_password: currentPassword,
-      }),
-    });
+    return this.request<RegistrationChallengeResponse>(
+      "/api/auth/change-email",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          new_email: newEmail,
+          current_password: currentPassword,
+        }),
+      },
+    );
   }
 
   async validateCurrentUserEmailChange(
     newEmail: string,
   ): Promise<StatusResponse> {
-    return this.request<StatusResponse>("/api/auth/me/email/validate", {
+    return this.request<StatusResponse>("/api/auth/change-email/validate", {
       method: "POST",
       body: JSON.stringify({
         new_email: newEmail,
@@ -566,7 +525,7 @@ class ApiClient {
 
   async changeCurrentUserEmail(
     newEmail: string,
-    currentPassword: string,
+    currentPassword?: string,
   ): Promise<RegistrationChallengeResponse> {
     return this.startCurrentUserEmailChange(newEmail, currentPassword);
   }
@@ -575,7 +534,7 @@ class ApiClient {
     otp: string,
   ): Promise<CurrentUserResponse> {
     const user = await this.request<CurrentUserResponse>(
-      "/api/auth/me/email/verify",
+      "/api/auth/change-email/verify",
       {
         method: "POST",
         body: JSON.stringify({ otp }),
@@ -587,11 +546,20 @@ class ApiClient {
 
   async resendCurrentUserEmailChange(): Promise<RegistrationChallengeResponse> {
     return this.request<RegistrationChallengeResponse>(
-      "/api/auth/me/email/resend",
+      "/api/auth/change-email/resend",
       {
         method: "POST",
       },
     );
+  }
+
+  async setCurrentUserPassword(newPassword: string): Promise<StatusResponse> {
+    return this.request<StatusResponse>("/api/auth/set-password", {
+      method: "POST",
+      body: JSON.stringify({
+        new_password: newPassword,
+      }),
+    });
   }
 
   async changeCurrentUserPassword(
@@ -951,59 +919,6 @@ class ApiClient {
    */
   async deleteTag(projectId: string, tagId: string): Promise<void> {
     return this.request(`/api/projects/${projectId}/tags/${tagId}`, {
-      method: "DELETE",
-    });
-  }
-
-  // ==================== DRAFT ENDPOINTS ====================
-
-  /**
-   * List drafts in project
-   */
-  async listDrafts(projectId: string): Promise<DraftResponse[]> {
-    const drafts = await this.request<RawDraftResponse[]>(
-      `/api/projects/${projectId}/drafts`,
-      {
-        method: "GET",
-      },
-    );
-
-    return drafts.map(normalizeDraftResponse);
-  }
-
-  /**
-   * Save draft
-   */
-  async saveDraft(
-    projectId: string,
-    textPrompt: string,
-    voiceId?: string,
-    speed?: number,
-    pitch?: number,
-    generationId?: string,
-  ): Promise<DraftResponse> {
-    const draft = await this.request<RawDraftResponse>(
-      `/api/projects/${projectId}/drafts`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          text_prompt: textPrompt,
-          voice_id: voiceId,
-          speed: speed || 1.0,
-          pitch: pitch || 1.0,
-          generation_id: generationId,
-        }),
-      },
-    );
-
-    return normalizeDraftResponse(draft);
-  }
-
-  /**
-   * Delete draft
-   */
-  async deleteDraft(projectId: string, draftId: string): Promise<void> {
-    return this.request(`/api/projects/${projectId}/drafts/${draftId}`, {
       method: "DELETE",
     });
   }

@@ -10,7 +10,7 @@ import logging
 
 from database.models import (
     Project, Generation, ProjectFolder, AudioCollection, AudioTag,
-    ProjectShare, GenerationDraft, ProjectAnalytics, GenerationHistory,
+    ProjectShare, ProjectAnalytics, GenerationHistory,
     generation_collections, generation_tags, User
 )
 
@@ -747,66 +747,6 @@ class ProjectService:
         except SQLAlchemyError as e:
             db.rollback()
             logger.error(f"Database error revoking share: {e}")
-            raise
-    
-    # ==================== DRAFT OPERATIONS ====================
-    
-    @staticmethod
-    def save_draft(db: Session, project_id: str, text_prompt: str, voice_id: str, 
-                   speed: float = 1.0, pitch: float = 1.0, generation_id: str = None) -> GenerationDraft:
-        """Save a generation draft."""
-        try:
-            logger.info(f"Saving draft for project: {project_id}")
-            
-            draft = GenerationDraft(
-                id=uuid.uuid4(),
-                project_id=_as_uuid(project_id),
-                generation_id=_as_uuid(generation_id),
-                text_prompt=text_prompt,
-                voice_id=voice_id,
-                speed=speed,
-                pitch=pitch,
-                saved_at=datetime.utcnow()
-            )
-            db.add(draft)
-            db.commit()
-            
-            logger.info(f"Draft saved with ID: {draft.id}")
-            return draft
-        
-        except SQLAlchemyError as e:
-            db.rollback()
-            logger.error(f"Database error saving draft: {e}")
-            raise
-    
-    @staticmethod
-    def get_drafts(db: Session, project_id: str) -> List[GenerationDraft]:
-        """Get all drafts for a project."""
-        try:
-            return db.query(GenerationDraft).filter(GenerationDraft.project_id == _as_uuid(project_id)).all()
-        except SQLAlchemyError as e:
-            logger.error(f"Database error getting drafts for project {project_id}: {e}")
-            return []
-    
-    @staticmethod
-    def delete_draft(db: Session, draft_id: str) -> bool:
-        """Delete a draft."""
-        try:
-            logger.info(f"Deleting draft: {draft_id}")
-            
-            draft = db.query(GenerationDraft).filter(GenerationDraft.id == _as_uuid(draft_id)).first()
-            if not draft:
-                return False
-            
-            db.delete(draft)
-            db.commit()
-            
-            logger.info(f"Draft {draft_id} deleted successfully")
-            return True
-        
-        except SQLAlchemyError as e:
-            db.rollback()
-            logger.error(f"Database error deleting draft {draft_id}: {e}")
             raise
     
     # ==================== ANALYTICS OPERATIONS ====================

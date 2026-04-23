@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, Float, Integer, Boolean, ForeignKey, func, Table, Enum, UniqueConstraint, UUID
+from sqlalchemy import Column, String, DateTime, Text, Float, Integer, Boolean, ForeignKey, func, Table, Enum, UniqueConstraint, UUID, text
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 import uuid
@@ -15,7 +15,7 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False, index=True)
     username = Column(String(255), nullable=False)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     is_admin = Column(Boolean, nullable=False, default=False)
     is_verified = Column(Boolean, nullable=False, default=False)
@@ -63,7 +63,7 @@ class PendingOAuthLink(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id"), nullable=False, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     provider = Column(String(50), nullable=False, index=True)
     provider_subject = Column(String(255), nullable=False, index=True)
     email = Column(String(255), nullable=False, index=True)
@@ -114,7 +114,8 @@ class AuthSession(Base):
     __tablename__ = "auth_sessions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    active_account_id = Column(UUID(as_uuid=True), ForeignKey("session_accounts.id"), nullable=True)
+    active_account_id = Column(UUID(as_uuid=True), ForeignKey("session_accounts.id", ondelete="SET NULL"), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("TRUE"), index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
@@ -126,17 +127,25 @@ class AuthSession(Base):
         back_populates="session",
         cascade="all, delete-orphan",
         foreign_keys="SessionAccount.session_id",
+        passive_deletes=True,
     )
-    active_account = relationship("SessionAccount", foreign_keys=[active_account_id], post_update=True)
+    active_account = relationship(
+        "SessionAccount",
+        foreign_keys=[active_account_id],
+        post_update=True,
+        passive_deletes=True,
+    )
     oauth_states = relationship(
         "OAuthAuthorizationState",
         back_populates="session",
         cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     pending_oauth_links = relationship(
         "PendingOAuthLink",
         back_populates="session",
         cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -172,7 +181,7 @@ class SessionAccount(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id"), nullable=False, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     identity_id = Column(UUID(as_uuid=True), ForeignKey("oauth_identities.id"), nullable=True, index=True)
     provider = Column(String(50), nullable=False, index=True)
@@ -202,7 +211,7 @@ class OAuthAuthorizationState(Base):
     __tablename__ = "oauth_authorization_states"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id"), nullable=False, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     provider = Column(String(50), nullable=False, index=True)
     state = Column(String(255), nullable=False, unique=True, index=True)
     nonce = Column(String(255), nullable=True)
@@ -244,7 +253,6 @@ class Project(Base):
     collections = relationship("AudioCollection", back_populates="project", cascade="all, delete-orphan")
     tags = relationship("AudioTag", back_populates="project", cascade="all, delete-orphan")
     shares = relationship("ProjectShare", back_populates="project", cascade="all, delete-orphan")
-    drafts = relationship("GenerationDraft", back_populates="project", cascade="all, delete-orphan")
     analytics = relationship("ProjectAnalytics", back_populates="project", uselist=False, cascade="all, delete-orphan")
     generations = relationship("Generation", back_populates="project", cascade="all, delete-orphan")
 
@@ -276,7 +284,6 @@ class Generation(Base):
     collections = relationship("AudioCollection", secondary="generation_collections", back_populates="generations")
     tags = relationship("AudioTag", secondary="generation_tags", back_populates="generations")
     history = relationship("GenerationHistory", back_populates="generation", cascade="all, delete-orphan")
-    drafts = relationship("GenerationDraft", back_populates="generation", cascade="all, delete-orphan")
 
     @property
     def text(self):
@@ -400,22 +407,6 @@ class ProjectShare(Base):
     shared_with_user = relationship("User")
 
 
-# NEW: Generation Drafts (auto-save)
-class GenerationDraft(Base):
-    __tablename__ = "generation_drafts"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
-    generation_id = Column(UUID(as_uuid=True), ForeignKey("generations.id"), nullable=True, index=True)
-    text_prompt = Column(Text, nullable=False)
-    voice_id = Column(String(100), nullable=True, index=True)
-    speed = Column(Float, nullable=False, default=1.0)
-    pitch = Column(Float, nullable=False, default=1.0)
-    saved_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    
-    # Relationships
-    project = relationship("Project", back_populates="drafts")
-    generation = relationship("Generation", back_populates="drafts")
 
 
 # NEW: Project Analytics

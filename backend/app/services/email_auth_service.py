@@ -56,7 +56,9 @@ class EmailAuthService:
         return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
     @staticmethod
-    def verify_password(plain_password: str, password_hash: str) -> bool:
+    def verify_password(plain_password: str, password_hash: str | None) -> bool:
+        if not password_hash:
+            return False
         return bcrypt.checkpw(plain_password.encode("utf-8"), password_hash.encode("utf-8"))
 
     @staticmethod
@@ -130,6 +132,21 @@ class EmailAuthService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
             )
+
+    @staticmethod
+    def enable_password_auth(user: User, password: str) -> None:
+        if user.has_email_auth:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email/password sign-in is already enabled for this account",
+            )
+
+        EmailAuthService.validate_password(password)
+        user.password_hash = EmailAuthService.hash_password(password)
+        user.has_email_auth = True
+        user.is_verified = True
+        user.is_email_verified = True
+        user.updated_at = _utcnow()
 
     @staticmethod
     def upsert_pending_registration(
@@ -659,7 +676,7 @@ class EmailAuthService:
                 detail="Invalid email or password",
             )
 
-        if not user.has_email_auth:
+        if not user.has_email_auth or not user.password_hash:
             linked_provider_names = {
                 identity.provider
                 for identity in user.oauth_identities
@@ -671,7 +688,10 @@ class EmailAuthService:
                 )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This email is linked to social sign-in only. Complete email verification to add password sign-in.",
+                detail=(
+                    "Password sign-in is not enabled for this account yet. "
+                    "Sign in with a connected provider and set a password in Settings to enable email login."
+                ),
             )
 
         if not EmailAuthService.verify_password(password, user.password_hash):

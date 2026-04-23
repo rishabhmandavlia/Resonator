@@ -387,6 +387,67 @@ def repair_schema() -> None:
 
             logger.info("Added missing %s.%s boolean column", table_name, column_name)
 
+        def ensure_index(index_name: str, table_name: str, columns_sql: str) -> None:
+            if not inspect(engine).has_table(table_name):
+                return
+
+            statement = f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({columns_sql})"
+            with engine.begin() as connection:
+                connection.execute(text(statement))
+
+        def get_foreign_key(table_name: str, constraint_name: str) -> dict | None:
+            table_inspector = inspect(engine)
+            if not table_inspector.has_table(table_name):
+                return None
+
+            for foreign_key in table_inspector.get_foreign_keys(table_name):
+                if foreign_key.get("name") == constraint_name:
+                    return foreign_key
+
+            return None
+
+        def ensure_postgres_foreign_key_action(
+            table_name: str,
+            constraint_name: str,
+            constrained_columns: list[str],
+            referred_table: str,
+            referred_columns: list[str],
+            ondelete: str,
+        ) -> None:
+            if engine.dialect.name != "postgresql":
+                return
+
+            foreign_key = get_foreign_key(table_name, constraint_name)
+            if foreign_key is not None:
+                current_ondelete = (foreign_key.get("options") or {}).get("ondelete")
+                if (current_ondelete or "").upper() == ondelete.upper():
+                    return
+
+            columns_sql = ", ".join(constrained_columns)
+            referred_columns_sql = ", ".join(referred_columns)
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {table_name} "
+                        f"DROP CONSTRAINT IF EXISTS {constraint_name}"
+                    )
+                )
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {table_name} "
+                        f"ADD CONSTRAINT {constraint_name} "
+                        f"FOREIGN KEY ({columns_sql}) REFERENCES {referred_table} ({referred_columns_sql}) "
+                        f"ON DELETE {ondelete}"
+                    )
+                )
+
+            logger.info(
+                "Updated %s.%s with ON DELETE %s",
+                table_name,
+                constraint_name,
+                ondelete,
+            )
+
         def ensure_string_column(
             table_name: str,
             column_name: str,
@@ -417,6 +478,121 @@ def repair_schema() -> None:
                 connection.execute(text(statement))
 
             logger.info("Added missing %s.%s string column", table_name, column_name)
+
+        def drop_obsolete_table(table_name: str) -> None:
+            with engine.begin() as connection:
+                connection.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+
+            logger.info("Dropped obsolete table %s if it existed", table_name)
+
+        def ensure_users_password_hash_nullable() -> None:
+            if not inspector.has_table("users"):
+                return
+
+            columns = {
+                column["name"]: column
+                for column in inspector.get_columns("users")
+            }
+            password_column = columns.get("password_hash")
+            if password_column is None or password_column.get("nullable", True):
+                return
+
+            if engine.dialect.name == "postgresql":
+                with engine.begin() as connection:
+                    connection.execute(
+                        text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL")
+                    )
+                logger.info("Relaxed users.password_hash nullability")
+                return
+
+            if engine.dialect.name == "sqlite":
+                raw_connection = engine.raw_connection()
+                cursor = raw_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA foreign_keys=OFF")
+                    cursor.execute(
+                        """
+                        CREATE TABLE users__password_hash_nullable (
+                            id VARCHAR(36) NOT NULL PRIMARY KEY,
+                            email VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            password_hash VARCHAR(255),
+                            is_active BOOLEAN NOT NULL,
+                            is_admin BOOLEAN NOT NULL,
+                            is_verified BOOLEAN NOT NULL,
+                            is_email_verified BOOLEAN NOT NULL DEFAULT 0,
+                            has_email_auth BOOLEAN NOT NULL DEFAULT 0,
+                            last_login DATETIME,
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL
+                        )
+                        """
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO users__password_hash_nullable (
+                            id,
+                            email,
+                            username,
+                            password_hash,
+                            is_active,
+                            is_admin,
+                            is_verified,
+                            is_email_verified,
+                            has_email_auth,
+                            last_login,
+                            created_at,
+                            updated_at
+                        )
+                        SELECT
+                            id,
+                            email,
+                            username,
+                            password_hash,
+                            is_active,
+                            is_admin,
+                            is_verified,
+                            COALESCE(is_email_verified, 0),
+                            COALESCE(has_email_auth, 0),
+                            last_login,
+                            created_at,
+                            updated_at
+                        FROM users
+                        """
+                    )
+                    cursor.execute("DROP TABLE users")
+                    cursor.execute(
+                        "ALTER TABLE users__password_hash_nullable RENAME TO users"
+                    )
+                    cursor.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_users_is_email_verified ON users (is_email_verified)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_users_has_email_auth ON users (has_email_auth)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_users_created_at ON users (created_at)"
+                    )
+                    raw_connection.commit()
+                    logger.info("Relaxed users.password_hash nullability")
+                except Exception:
+                    raw_connection.rollback()
+                    raise
+                finally:
+                    try:
+                        cursor.execute("PRAGMA foreign_keys=ON")
+                    finally:
+                        cursor.close()
+                        raw_connection.close()
+                return
+
+            logger.warning(
+                "Skipping users.password_hash nullability repair for unsupported dialect: %s",
+                engine.dialect.name,
+            )
 
         def ensure_unique_index(index_name: str, table_name: str, columns_sql: str) -> None:
             if not inspector.has_table(table_name):
@@ -469,14 +645,48 @@ def repair_schema() -> None:
                 table_name,
             )
 
-        repair_voice_id_column("generation_drafts")
         repair_voice_id_column("generations")
+        drop_obsolete_table("generation_drafts")
         ensure_string_column("generations", "title", 255)
         ensure_string_column("oauth_authorization_states", "link_user_id", 36)
+        ensure_boolean_column("auth_sessions", "is_active", "TRUE" if engine.dialect.name == "postgresql" else "1")
         ensure_boolean_column("projects", "is_system", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "is_email_verified", "FALSE" if engine.dialect.name == "postgresql" else "0")
         ensure_boolean_column("users", "has_email_auth", "FALSE" if engine.dialect.name == "postgresql" else "0")
+        ensure_users_password_hash_nullable()
         ensure_boolean_column("oauth_identities", "email_verified", "FALSE" if engine.dialect.name == "postgresql" else "0")
+        ensure_postgres_foreign_key_action(
+            "session_accounts",
+            "session_accounts_session_id_fkey",
+            ["session_id"],
+            "auth_sessions",
+            ["id"],
+            "CASCADE",
+        )
+        ensure_postgres_foreign_key_action(
+            "auth_sessions",
+            "auth_sessions_active_account_id_fkey",
+            ["active_account_id"],
+            "session_accounts",
+            ["id"],
+            "SET NULL",
+        )
+        ensure_postgres_foreign_key_action(
+            "oauth_authorization_states",
+            "oauth_authorization_states_session_id_fkey",
+            ["session_id"],
+            "auth_sessions",
+            ["id"],
+            "CASCADE",
+        )
+        ensure_postgres_foreign_key_action(
+            "pending_oauth_links",
+            "pending_oauth_links_session_id_fkey",
+            ["session_id"],
+            "auth_sessions",
+            ["id"],
+            "CASCADE",
+        )
 
         with engine.begin() as connection:
             if inspector.has_table("users"):
@@ -494,9 +704,16 @@ def repair_schema() -> None:
                         "WHERE provider = 'google' AND email IS NOT NULL AND email_verified = FALSE"
                     )
                 )
+            if inspector.has_table("auth_sessions"):
+                connection.execute(
+                    text(
+                        "UPDATE auth_sessions SET is_active = TRUE WHERE is_active IS DISTINCT FROM TRUE"
+                    )
+                )
 
         repair_auth_duplicates()
         purge_removed_oauth_provider_data()
+        ensure_index("ix_auth_sessions_is_active_last_seen_at", "auth_sessions", "is_active, last_seen_at")
         ensure_unique_index("uq_users_email_normalized", "users", "LOWER(email)")
         ensure_unique_index("uq_oauth_identities_user_provider_idx", "oauth_identities", "user_id, provider")
     except Exception as e:
