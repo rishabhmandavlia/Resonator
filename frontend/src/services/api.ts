@@ -960,6 +960,8 @@ class ApiClient {
     voiceId: string,
     speed?: number,
     pitch?: number,
+    sampleRate?: number,
+    audioFormat?: string,
     folderId?: string,
     title?: string,
   ): Promise<GenerationResponse> {
@@ -976,6 +978,8 @@ class ApiClient {
         voice_id: voiceId,
         speed: speed || 1.0,
         pitch: pitch || 1.0,
+        sample_rate: sampleRate || 22050,
+        audio_format: audioFormat || "wav",
         folder_id: folderId,
         title,
       }),

@@ -25,6 +25,7 @@ torchaudio==2.1.1
 numpy==1.26.2
 scipy==1.11.4
 librosa==0.10.0
+pydub==0.25.1
 
 # Kokoro TTS Implementation
 kokoro==0.9.4

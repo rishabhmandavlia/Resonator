@@ -22,13 +22,7 @@ import {
   SelectValue,
 } from "./ui/select";
 import { Slider } from "./ui/slider";
-import {
-  Sparkles,
-  Wand2,
-  RefreshCw,
-  AlertCircle,
-  Loader,
-} from "lucide-react";
+import { Sparkles, Wand2, RefreshCw, AlertCircle, Loader } from "lucide-react";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAuth } from "../services/auth";
 import {
@@ -73,6 +67,14 @@ export function KokoroStudio({
   const [pitch, setPitch] = usePersistentState<number>(
     `${STORAGE_PREFIX}pitch`,
     1.0,
+  );
+  const [sampleRate, setSampleRate] = usePersistentState<number>(
+    `${STORAGE_PREFIX}sampleRate`,
+    22050,
+  );
+  const [audioFormat, setAudioFormat] = usePersistentState<string>(
+    `${STORAGE_PREFIX}audioFormat`,
+    "wav",
   );
   const [selectedProject, setSelectedProject] = usePersistentState<string>(
     `${STORAGE_PREFIX}project`,
@@ -271,6 +273,8 @@ export function KokoroStudio({
           voice,
           speed,
           pitch,
+          sampleRate,
+          audioFormat,
           undefined,
           `${voice} - ${text.substring(0, 50)}`,
         );
@@ -291,6 +295,8 @@ export function KokoroStudio({
           voice,
           speed,
           pitch,
+          sampleRate,
+          audioFormat,
         );
 
         setCurrentGeneration(generation);
@@ -298,7 +304,9 @@ export function KokoroStudio({
           generation.audio_url || generation.audio_file_path || "",
         );
         setAudioUrl(playableUrl);
-        setSuccess("Audio generated successfully and saved to generation history!");
+        setSuccess(
+          "Audio generated successfully and saved to generation history!",
+        );
       }
     } catch (err: any) {
       setError(err?.detail || "Failed to generate audio");
@@ -356,6 +364,8 @@ export function KokoroStudio({
     setVoice("af_bella");
     setSpeed(1.0);
     setPitch(1.0);
+    setSampleRate(22050);
+    setAudioFormat("wav");
 
     if (forceStandalone) {
       setSelectedProject(STANDALONE_PROJECT_ID);
@@ -680,6 +690,71 @@ export function KokoroStudio({
                         <span>Low</span>
                         <span>High</span>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Audio Format Control */}
+                  <Card className="border-border/50 shadow-sm">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm">Audio Format</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <Select
+                        value={audioFormat}
+                        onValueChange={setAudioFormat}
+                      >
+                        <SelectTrigger className="h-8 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="wav">
+                            WAV - Highest Quality
+                          </SelectItem>
+                          <SelectItem value="mp3">MP3 - Compressed</SelectItem>
+                          <SelectItem value="ogg">OGG - Compressed</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        WAV offers best quality, MP3/OGG are smaller files
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Sample Rate Control */}
+                  <Card className="border-border/50 shadow-sm">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm">Sample Rate</CardTitle>
+                        <span className="text-xs font-medium bg-secondary px-1.5 py-0.5 rounded">
+                          {sampleRate} Hz
+                        </span>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <Select
+                        value={sampleRate.toString()}
+                        onValueChange={(val: string) =>
+                          setSampleRate(parseInt(val))
+                        }
+                      >
+                        <SelectTrigger className="h-8 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="16000">
+                            16000 Hz - Low Quality
+                          </SelectItem>
+                          <SelectItem value="22050">
+                            22050 Hz - Standard
+                          </SelectItem>
+                          <SelectItem value="44100">
+                            44100 Hz - High Quality
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Higher rates = better quality but larger files
+                      </p>
                     </CardContent>
                   </Card>
 

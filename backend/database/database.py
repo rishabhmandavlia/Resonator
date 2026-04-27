@@ -479,6 +479,38 @@ def repair_schema() -> None:
 
             logger.info("Added missing %s.%s string column", table_name, column_name)
 
+        def ensure_numeric_column(
+            table_name: str,
+            column_name: str,
+            type_sql: str,
+            default_sql: str,
+        ) -> None:
+            if not inspector.has_table(table_name):
+                return
+
+            columns = {
+                column["name"]: column
+                for column in inspector.get_columns(table_name)
+            }
+            if column_name in columns:
+                return
+
+            if engine.dialect.name == "postgresql":
+                statement = (
+                    f"ALTER TABLE {table_name} "
+                    f"ADD COLUMN IF NOT EXISTS {column_name} {type_sql} NOT NULL DEFAULT {default_sql}"
+                )
+            else:
+                statement = (
+                    f"ALTER TABLE {table_name} "
+                    f"ADD COLUMN {column_name} {type_sql} NOT NULL DEFAULT {default_sql}"
+                )
+
+            with engine.begin() as connection:
+                connection.execute(text(statement))
+
+            logger.info("Added missing %s.%s numeric column", table_name, column_name)
+
         def drop_obsolete_table(table_name: str) -> None:
             with engine.begin() as connection:
                 connection.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
@@ -647,6 +679,14 @@ def repair_schema() -> None:
 
         repair_voice_id_column("generations")
         drop_obsolete_table("generation_drafts")
+        ensure_numeric_column("generations", "sample_rate", "INTEGER", "22050")
+        ensure_numeric_column(
+            "generations",
+            "duration_seconds",
+            "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
+            "0.0",
+        )
+        ensure_string_column("generations", "file_format", 20)
         ensure_string_column("generations", "title", 255)
         ensure_string_column("oauth_authorization_states", "link_user_id", 36)
         ensure_boolean_column("auth_sessions", "is_active", "TRUE" if engine.dialect.name == "postgresql" else "1")

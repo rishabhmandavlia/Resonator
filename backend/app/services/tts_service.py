@@ -45,7 +45,15 @@ except ImportError as kokoro_import_error:
     KModel = None  # type: ignore[assignment]
     KPipeline = None  # type: ignore[assignment]
     KOKORO_AVAILABLE = False
-    logger.warning(f"Kokoro package not available. Audio generation is disabled: {kokoro_import_error}")
+    logger.warning(f"Kokoro package not available. TTS generation is disabled: {kokoro_import_error}")
+
+try:
+    from pydub import AudioSegment
+    PYDUB_AVAILABLE = True
+except ImportError as pydub_import_error:
+    PYDUB_AVAILABLE = False
+    AudioSegment = None  # type: ignore[assignment]
+    logger.warning(f"pydub not available. MP3/OGG conversion will be disabled: {pydub_import_error}")
 
 # Kokoro model paths
 MODEL_DIR = Path(__file__).parent.parent.parent / "models" / "kokoro"
@@ -138,7 +146,7 @@ class TTSService:
         return TTSService._pipelines[language_code]
 
     @staticmethod
-    def _save_audio_file(audio_path: Path, waveform: "torch.Tensor") -> None:
+    def _save_audio_file(audio_path: Path, waveform: "torch.Tensor", sample_rate: int = AUDIO_SAMPLE_RATE) -> None:
         """Write a mono WAV file using 16-bit PCM."""
         import wave
 
@@ -148,8 +156,46 @@ class TTSService:
         with wave.open(str(audio_path), "wb") as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
-            wav_file.setframerate(AUDIO_SAMPLE_RATE)
+            wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm_bytes)
+
+    @staticmethod
+    def _convert_audio_format(
+        input_path: Path,
+        output_path: Path,
+        target_format: str,
+        target_sample_rate: int,
+    ) -> None:
+        """Convert audio file to target format and sample rate."""
+        if not PYDUB_AVAILABLE:
+            logger.warning("pydub not available, falling back to WAV format")
+            # Fallback: just copy the file
+            import shutil
+            shutil.copy2(str(input_path), str(output_path))
+            return
+
+        try:
+            # Load audio with pydub
+            audio = AudioSegment.from_wav(str(input_path))
+
+            # Resample if needed
+            if audio.frame_rate != target_sample_rate:
+                audio = audio.set_frame_rate(target_sample_rate)
+
+            # Export to target format
+            if target_format.lower() == "mp3":
+                audio.export(str(output_path), format="mp3", bitrate="192k")
+            elif target_format.lower() == "ogg":
+                audio.export(str(output_path), format="ogg")
+            else:
+                # For wav or unknown formats, just copy with resampling
+                audio.export(str(output_path), format="wav")
+
+        except Exception as e:
+            logger.warning(f"Format conversion failed: {e}, falling back to WAV")
+            # Fallback: just copy the file
+            import shutil
+            shutil.copy2(str(input_path), str(output_path))
 
     @staticmethod
     def _apply_pitch_shift(waveform: "torch.Tensor", pitch: float) -> "torch.Tensor":
@@ -253,6 +299,8 @@ class TTSService:
         voice_id: str,
         speed: float = 1.0,
         pitch: float = 1.0,
+        sample_rate: int = 22050,
+        audio_format: str = "wav",
         project_id: Optional[str] = None,
     ) -> Tuple[str, float, str]:
         """
@@ -323,25 +371,54 @@ class TTSService:
 
             waveform = waveform.clamp(-1.0, 1.0)
 
-            audio_id = str(uuid.uuid4())
-            audio_path = AUDIO_OUTPUT_DIR / f"{audio_id}.wav"
+            # Handle sample rate conversion
+            if sample_rate != AUDIO_SAMPLE_RATE:
+                if TORCHAUDIO_AVAILABLE:
+                    waveform = torchaudio.functional.resample(
+                        waveform.unsqueeze(0),
+                        orig_freq=AUDIO_SAMPLE_RATE,
+                        new_freq=sample_rate,
+                    ).squeeze(0)
+                else:
+                    logger.warning("Sample rate conversion requested but torchaudio not available, using native rate")
 
-            TTSService._save_audio_file(audio_path, waveform)
-            duration = waveform.numel() / AUDIO_SAMPLE_RATE
+            audio_id = str(uuid.uuid4())
+            temp_wav_path = AUDIO_OUTPUT_DIR / f"{audio_id}_temp.wav"
+            final_audio_path = AUDIO_OUTPUT_DIR / f"{audio_id}.{audio_format.lower()}"
+
+            # Save temporary WAV file
+            TTSService._save_audio_file(temp_wav_path, waveform, sample_rate)
+
+            # Convert format if needed
+            if audio_format.lower() == "wav":
+                # No conversion needed, just rename
+                temp_wav_path.rename(final_audio_path)
+            else:
+                # Convert to target format
+                TTSService._convert_audio_format(
+                    temp_wav_path,
+                    final_audio_path,
+                    audio_format,
+                    sample_rate,
+                )
+                # Clean up temp file
+                temp_wav_path.unlink(missing_ok=True)
+
+            duration = waveform.numel() / sample_rate
 
             if not STORAGE_AVAILABLE:
                 raise RuntimeError("Supabase storage is not available")
 
             storage_path, audio_url = SupabaseStorageService.store_audio_file(
-                audio_path,
+                final_audio_path,
                 project_id=project_id,
                 voice_id=voice_id,
             )
 
             try:
-                audio_path.unlink(missing_ok=True)
+                final_audio_path.unlink(missing_ok=True)
             except Exception:
-                logger.debug("Unable to remove temporary generated audio file: %s", audio_path)
+                logger.debug("Unable to remove temporary generated audio file: %s", final_audio_path)
             
             logger.info(f"Audio generated successfully: {storage_path} (duration: {duration:.2f}s)")
             

@@ -105,6 +105,7 @@ def create_generation_record(
     voice_id: str | None,
     speed: float,
     pitch: float,
+    sample_rate: int,
     duration_seconds: float,
     audio_path: str,
     file_format: str = "wav",
@@ -117,6 +118,7 @@ def create_generation_record(
         text_prompt=text,
         speed=speed,
         pitch=pitch,
+        sample_rate=sample_rate,
         duration_seconds=duration_seconds,
         audio_path=audio_path,
         file_format=file_format,
@@ -270,6 +272,8 @@ class GenerationRequest(BaseModel):
     voice_id: str = Field(..., description="Voice model identifier (e.g., 'af_bella')")
     speed: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
     pitch: float = Field(1.0, ge=0.5, le=2.0, description="Pitch multiplier")
+    sample_rate: int = Field(22050, ge=16000, le=44100, description="Audio sample rate in Hz")
+    audio_format: str = Field("wav", pattern="^(wav|mp3|ogg)$", description="Audio output format")
     folder_id: Optional[str] = Field(None, description="Optional folder to save generation in")
     title: Optional[str] = Field(None, max_length=255, description="Optional title for the generation")
 
@@ -890,6 +894,8 @@ def generate_audio_standalone(
             voice_id=payload.voice_id,
             speed=payload.speed,
             pitch=payload.pitch,
+            sample_rate=payload.sample_rate,
+            audio_format=payload.audio_format,
             project_id=str(standalone_project.id),
         )
 
@@ -901,8 +907,10 @@ def generate_audio_standalone(
             voice_id=payload.voice_id,
             speed=payload.speed,
             pitch=payload.pitch,
+            sample_rate=payload.sample_rate,
             duration_seconds=duration,
             audio_path=audio_path,
+            file_format=payload.audio_format,
             title=payload.title,
         )
 
@@ -964,6 +972,8 @@ def generate_audio(
             voice_id=payload.voice_id,
             speed=payload.speed,
             pitch=payload.pitch,
+            sample_rate=payload.sample_rate,
+            audio_format=payload.audio_format,
             project_id=project_id,
         )
         
@@ -975,8 +985,10 @@ def generate_audio(
             voice_id=payload.voice_id,
             speed=payload.speed,
             pitch=payload.pitch,
+            sample_rate=payload.sample_rate,
             duration_seconds=duration,
             audio_path=audio_path,
+            file_format=payload.audio_format,
             title=payload.title,
         )
 
