@@ -36,6 +36,9 @@ export interface GenerationResponse {
   text: string;
   text_prompt: string;
   voice_id: string | null;
+  speed: number;
+  pitch: number;
+  sample_rate: number;
   audio_path: string | null;
   audio_file_path: string | null;
   audio_url: string | null;
@@ -169,6 +172,13 @@ export interface StoredAudioFilesResponse {
   files: StoredAudioFile[];
 }
 
+export interface StorageSummaryResponse {
+  quotaBytes: number;
+  usedBytes: number;
+  remainingBytes: number;
+  fileCount: number;
+}
+
 export interface BulkDeleteStoredAudioResponse {
   deletedIds: string[];
   deletedCount: number;
@@ -184,6 +194,10 @@ type RawFilteredGenerationsResponse = {
 type RawGenerationResponse = Partial<GenerationResponse> & {
   id: string;
   user_id: string;
+};
+
+type RawGenerationJobResponse = Omit<GenerationJobResponse, "result"> & {
+  result?: RawGenerationResponse | null;
 };
 
 function normalizeApiDate(value?: string | null): string {
@@ -226,6 +240,9 @@ function normalizeGenerationResponse(
     text: response.text || textPrompt,
     text_prompt: textPrompt,
     voice_id: response.voice_id || null,
+    speed: response.speed ?? 1.0,
+    pitch: response.pitch ?? 1.0,
+    sample_rate: response.sample_rate ?? 22050,
     audio_path: response.audio_path || audioPath,
     audio_file_path: audioPath,
     audio_url: response.audio_url || null,
@@ -991,10 +1008,10 @@ class ApiClient {
       body: JSON.stringify({
         text,
         voice_id: voiceId,
-        speed: speed || 1.0,
-        pitch: pitch || 1.0,
-        sample_rate: sampleRate || 22050,
-        audio_format: audioFormat || "wav",
+        speed: speed ?? 1.0,
+        pitch: pitch ?? 1.0,
+        sample_rate: sampleRate ?? 22050,
+        audio_format: audioFormat ?? "wav",
         folder_id: folderId,
         title,
       }),
@@ -1024,10 +1041,10 @@ class ApiClient {
       body: JSON.stringify({
         text,
         voice_id: voiceId,
-        speed: speed || 1.0,
-        pitch: pitch || 1.0,
-        sample_rate: sampleRate || 22050,
-        audio_format: audioFormat || "wav",
+        speed: speed ?? 1.0,
+        pitch: pitch ?? 1.0,
+        sample_rate: sampleRate ?? 22050,
+        audio_format: audioFormat ?? "wav",
         folder_id: folderId,
         title,
       }),
@@ -1035,10 +1052,17 @@ class ApiClient {
   }
 
   async getGenerationJob(jobId: string): Promise<GenerationJobResponse> {
-    return this.request<GenerationJobResponse>(
+    const response = await this.request<RawGenerationJobResponse>(
       `/api/projects/generate/jobs/${jobId}`,
       { method: "GET" },
     );
+
+    return {
+      ...response,
+      result: response.result
+        ? normalizeGenerationResponse(response.result)
+        : response.result ?? null,
+    };
   }
 
   async cancelGenerationJob(jobId: string): Promise<GenerationJobResponse> {
@@ -1219,6 +1243,7 @@ class ApiClient {
   }
 
   async listStoredAudioFiles(params?: {
+    includeSummary?: boolean;
     projectId?: string | null;
     voiceId?: string | null;
     dateFrom?: string | null;
@@ -1234,6 +1259,9 @@ class ApiClient {
   }): Promise<StoredAudioFilesResponse> {
     const queryParams = new URLSearchParams();
 
+    if (params?.includeSummary === false) {
+      queryParams.append("include_summary", "false");
+    }
     if (params?.projectId) {
       queryParams.append("project_id", params.projectId);
     }
@@ -1274,6 +1302,12 @@ class ApiClient {
       ...response,
       files: response.files.map(normalizeStoredAudioFile),
     };
+  }
+
+  async getStoredAudioSummary(): Promise<StorageSummaryResponse> {
+    return this.request<StorageSummaryResponse>("/api/audio/storage/summary", {
+      method: "GET",
+    });
   }
 
   async getStoredAudioFile(generationId: string): Promise<StoredAudioFile> {

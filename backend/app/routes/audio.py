@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+import time
 from urllib.parse import quote
 import logging
 import mimetypes
@@ -43,6 +44,15 @@ DEFAULT_STORAGE_QUOTA_BYTES = int(
     os.getenv("USER_AUDIO_STORAGE_QUOTA_BYTES", str(2 * 1024 * 1024 * 1024))
 )
 UPLOAD_NOTE_PREFIX = "Uploaded audio file:"
+FILE_SIZE_CACHE_TTL_SECONDS = int(
+    os.getenv("AUDIO_LIBRARY_FILE_SIZE_CACHE_TTL_SECONDS", "600")
+)
+SUMMARY_CACHE_TTL_SECONDS = int(
+    os.getenv("AUDIO_LIBRARY_SUMMARY_CACHE_TTL_SECONDS", "120")
+)
+
+_file_size_cache: dict[str, tuple[float, int]] = {}
+_storage_summary_cache: dict[str, tuple[float, int, int]] = {}
 
 
 class StorageAudioFileResponse(BaseModel):
@@ -76,6 +86,13 @@ class StorageFilesResponse(BaseModel):
     skip: int
     limit: int
     files: list[StorageAudioFileResponse]
+
+
+class StorageSummaryResponse(BaseModel):
+    quotaBytes: int
+    usedBytes: int
+    remainingBytes: int
+    fileCount: int
 
 
 class BulkDeleteRequest(BaseModel):
@@ -146,23 +163,128 @@ def _get_owned_generation(
     )
 
 
-def _resolve_file_size_bytes(generation: Generation) -> int:
-    audio_path = (generation.audio_path or "").strip()
-    if not audio_path:
+def _get_cached_file_size_bytes(audio_path: str) -> int | None:
+    cached_value = _file_size_cache.get(audio_path)
+    if not cached_value:
+        return None
+
+    expires_at, size_bytes = cached_value
+    if expires_at <= time.monotonic():
+        _file_size_cache.pop(audio_path, None)
+        return None
+
+    return size_bytes
+
+
+def _set_cached_file_size_bytes(audio_path: str, size_bytes: int) -> None:
+    _file_size_cache[audio_path] = (
+        time.monotonic() + FILE_SIZE_CACHE_TTL_SECONDS,
+        size_bytes,
+    )
+
+
+def _get_cached_storage_summary(current_user: str) -> tuple[int, int] | None:
+    cached_value = _storage_summary_cache.get(current_user)
+    if not cached_value:
+        return None
+
+    expires_at, file_count, used_bytes = cached_value
+    if expires_at <= time.monotonic():
+        _storage_summary_cache.pop(current_user, None)
+        return None
+
+    return file_count, used_bytes
+
+
+def _set_cached_storage_summary(
+    current_user: str,
+    *,
+    file_count: int,
+    used_bytes: int,
+) -> None:
+    _storage_summary_cache[current_user] = (
+        time.monotonic() + SUMMARY_CACHE_TTL_SECONDS,
+        file_count,
+        used_bytes,
+    )
+
+
+def _invalidate_storage_cache(
+    *,
+    current_user: str | None = None,
+    audio_paths: list[str] | None = None,
+) -> None:
+    if current_user:
+        _storage_summary_cache.pop(current_user, None)
+
+    for audio_path in audio_paths or []:
+        normalized_path = (audio_path or "").strip()
+        if normalized_path:
+            _file_size_cache.pop(normalized_path, None)
+
+
+def _resolve_file_size_bytes_from_path(audio_path: str | None) -> int:
+    normalized_path = (audio_path or "").strip()
+    if not normalized_path:
         return 0
 
-    if audio_path.startswith("generations/"):
+    cached_size_bytes = _get_cached_file_size_bytes(normalized_path)
+    if cached_size_bytes is not None:
+        return cached_size_bytes
+
+    if normalized_path.startswith("generations/"):
         try:
-            return SupabaseStorageService.get_object_size(audio_path) or 0
+            size_bytes = SupabaseStorageService.get_object_size(normalized_path) or 0
+            _set_cached_file_size_bytes(normalized_path, size_bytes)
+            return size_bytes
         except Exception as exc:
-            logger.warning("Could not load file size for %s: %s", audio_path, exc)
+            logger.warning("Could not load file size for %s: %s", normalized_path, exc)
             return 0
 
-    local_path = Path(audio_path)
+    local_path = Path(normalized_path)
     if local_path.exists():
-        return local_path.stat().st_size
+        size_bytes = local_path.stat().st_size
+        _set_cached_file_size_bytes(normalized_path, size_bytes)
+        return size_bytes
 
+    _set_cached_file_size_bytes(normalized_path, 0)
     return 0
+
+
+def _build_owned_storage_base_query(db: Session, current_user: str):
+    user_uuid = uuid.UUID(str(current_user))
+    return db.query(Generation).filter(
+        Generation.user_id == user_uuid,
+        Generation.audio_path.isnot(None),
+    )
+
+
+def _get_storage_summary(db: Session, current_user: str) -> tuple[int, int]:
+    cached_summary = _get_cached_storage_summary(current_user)
+    if cached_summary is not None:
+        return cached_summary
+
+    audio_paths = [
+        audio_path
+        for (audio_path,) in _build_owned_storage_base_query(db, current_user)
+        .with_entities(Generation.audio_path)
+        .all()
+    ]
+    file_count = len(audio_paths)
+    used_bytes = sum(
+        _resolve_file_size_bytes_from_path(audio_path)
+        for audio_path in audio_paths
+    )
+    _set_cached_storage_summary(
+        current_user,
+        file_count=file_count,
+        used_bytes=used_bytes,
+    )
+    return file_count, used_bytes
+
+
+def _resolve_file_size_bytes(generation: Generation) -> int:
+    return _resolve_file_size_bytes_from_path(generation.audio_path)
 
 
 def _build_storage_file_response(generation: Generation) -> StorageAudioFileResponse:
@@ -208,14 +330,9 @@ def _list_owned_generations(db: Session, current_user: str) -> list[Generation]:
 
 
 def _build_owned_storage_query(db: Session, current_user: str):
-    user_uuid = uuid.UUID(str(current_user))
     return (
-        db.query(Generation)
+        _build_owned_storage_base_query(db, current_user)
         .options(joinedload(Generation.project))
-        .filter(
-            Generation.user_id == user_uuid,
-            Generation.audio_path.isnot(None),
-        )
     )
 
 
@@ -360,6 +477,7 @@ def list_storage_files(
     file_format: str | None = Query(None, description="Filter by file format"),
     sort_by: str = Query("created_at", description="Sort by created_at, duration_seconds, name, or size"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    include_summary: bool = Query(True, description="Include quota and usage summary data"),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(20, ge=1, le=100, description="Number of records to return"),
     current_user: str = Depends(get_current_user),
@@ -397,9 +515,12 @@ def list_storage_files(
                 detail="Invalid date_to format. Use ISO format or YYYY-MM-DD.",
             ) from exc
 
-    all_generations = _build_owned_storage_query(db, current_user).all()
-    file_count = len(all_generations)
-    used_bytes = sum(_resolve_file_size_bytes(generation) for generation in all_generations)
+    if include_summary:
+        file_count, used_bytes = _get_storage_summary(db, current_user)
+    else:
+        file_count = _build_owned_storage_base_query(db, current_user).count()
+        cached_summary = _get_cached_storage_summary(current_user)
+        used_bytes = cached_summary[1] if cached_summary is not None else 0
 
     filtered_query = _apply_storage_filters(
         _build_owned_storage_query(db, current_user),
@@ -440,6 +561,20 @@ def list_storage_files(
         skip=skip,
         limit=limit,
         files=files,
+    )
+
+
+@router.get("/storage/summary", response_model=StorageSummaryResponse)
+def get_storage_summary(
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StorageSummaryResponse:
+    file_count, used_bytes = _get_storage_summary(db, current_user)
+    return StorageSummaryResponse(
+        quotaBytes=DEFAULT_STORAGE_QUOTA_BYTES,
+        usedBytes=used_bytes,
+        remainingBytes=max(DEFAULT_STORAGE_QUOTA_BYTES - used_bytes, 0),
+        fileCount=file_count,
     )
 
 
@@ -549,6 +684,11 @@ async def upload_storage_file(
     db.commit()
     db.refresh(generation)
 
+    _invalidate_storage_cache(
+        current_user=current_user,
+        audio_paths=[storage_path],
+    )
+
     return _build_storage_file_response(generation)
 
 
@@ -565,6 +705,8 @@ def delete_storage_file(
             detail="Audio file not found",
         )
 
+    audio_path = generation.audio_path
+
     deleted = ProjectService.delete_generation(
         db,
         generation_id,
@@ -576,6 +718,8 @@ def delete_storage_file(
             detail="Audio file not found",
         )
 
+    _invalidate_storage_cache(current_user=current_user, audio_paths=[audio_path])
+
     return None
 
 
@@ -585,6 +729,16 @@ def bulk_delete_storage_files(
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> BulkDeleteResponse:
+    owned_generations = [
+        generation
+        for generation in (
+            _get_owned_generation(db, generation_id, current_user)
+            for generation_id in payload.generationIds
+        )
+        if generation is not None
+    ]
+    invalidated_paths = [generation.audio_path for generation in owned_generations if generation.audio_path]
+
     deleted_ids: list[str] = []
 
     for generation_id in payload.generationIds:
@@ -599,6 +753,12 @@ def bulk_delete_storage_files(
         )
         if deleted:
             deleted_ids.append(generation_id)
+
+    if deleted_ids:
+        _invalidate_storage_cache(
+            current_user=current_user,
+            audio_paths=invalidated_paths,
+        )
 
     return BulkDeleteResponse(
         deletedIds=deleted_ids,

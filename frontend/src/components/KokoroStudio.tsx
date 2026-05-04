@@ -396,7 +396,28 @@ export function KokoroStudio({
       setVoice(generation.voice_id);
     }
 
-    setSuccess("Loaded generation script into the editor.");
+    if (typeof generation.speed === "number") {
+      setSpeed(generation.speed);
+    }
+
+    if (typeof generation.pitch === "number") {
+      setPitch(generation.pitch);
+    }
+
+    if (typeof generation.sample_rate === "number") {
+      setSampleRate(generation.sample_rate);
+    }
+
+    const normalizedFormat = generation.file_format?.toLowerCase();
+    if (
+      normalizedFormat === "wav" ||
+      normalizedFormat === "mp3" ||
+      normalizedFormat === "ogg"
+    ) {
+      setAudioFormat(normalizedFormat);
+    }
+
+    setSuccess("Loaded generation script and audio settings into the editor.");
   };
 
   const handleDownload = async () => {

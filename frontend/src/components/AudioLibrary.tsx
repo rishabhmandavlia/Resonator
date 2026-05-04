@@ -56,6 +56,9 @@ export interface AudioLibraryItem {
   text: string;
   text_prompt: string;
   voice_id: string | null;
+  speed?: number;
+  pitch?: number;
+  sample_rate?: number;
   audio_url: string | null;
   audio_file_path: string | null;
   duration_seconds: number;

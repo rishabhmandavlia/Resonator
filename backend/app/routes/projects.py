@@ -147,6 +147,9 @@ def _run_generation_job(job_id: str) -> None:
             project_name=(project.name if project is not None else STANDALONE_PROJECT_NAME),
             text=job.payload.text,
             voice_id=job.payload.voice_id,
+            speed=generation.speed,
+            pitch=generation.pitch,
+            sample_rate=generation.sample_rate,
             audio_path=generation.audio_path,
             audio_url=audio_url,
             duration_seconds=generation.duration_seconds,
@@ -196,6 +199,9 @@ def build_generation_response(
     user_id: str | uuid.UUID,
     text: str,
     voice_id: str | uuid.UUID | None,
+    speed: float = 1.0,
+    pitch: float = 1.0,
+    sample_rate: int = 22050,
     audio_path: str | None,
     audio_url: str | None,
     duration_seconds: float,
@@ -218,6 +224,9 @@ def build_generation_response(
         text=text,
         text_prompt=text,
         voice_id=serialize_uuid(voice_id),
+        speed=speed,
+        pitch=pitch,
+        sample_rate=sample_rate,
         audio_path=audio_path,
         audio_file_path=audio_path,
         file_format=file_format,
@@ -286,6 +295,9 @@ def serialize_generation(generation: Generation) -> "GenerationResponse":
         user_id=generation.user_id,
         text=generation.text_prompt,
         voice_id=generation.voice_id,
+        speed=generation.speed,
+        pitch=generation.pitch,
+        sample_rate=generation.sample_rate,
         audio_path=generation.audio_path,
         audio_url=build_generation_audio_url(generation.audio_path),
         duration_seconds=generation.duration_seconds,
@@ -434,6 +446,9 @@ class GenerationResponse(BaseModel):
     text: str
     text_prompt: str
     voice_id: Optional[str] = None
+    speed: float = 1.0
+    pitch: float = 1.0
+    sample_rate: int = 22050
     audio_path: Optional[str] = None
     audio_file_path: Optional[str] = None
     file_format: str = "wav"
@@ -1117,6 +1132,9 @@ def generate_audio_standalone(
             project_name=STANDALONE_PROJECT_NAME,
             text=payload.text,
             voice_id=payload.voice_id,
+            speed=generation.speed,
+            pitch=generation.pitch,
+            sample_rate=generation.sample_rate,
             audio_path=generation.audio_path,
             audio_url=audio_url,
             duration_seconds=generation.duration_seconds,
@@ -1218,6 +1236,9 @@ def generate_audio(
             project_name=project.name,
             text=payload.text,
             voice_id=payload.voice_id,
+            speed=generation.speed,
+            pitch=generation.pitch,
+            sample_rate=generation.sample_rate,
             audio_path=generation.audio_path,
             audio_url=audio_url,
             duration_seconds=generation.duration_seconds,
