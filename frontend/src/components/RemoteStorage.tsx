@@ -285,87 +285,89 @@ export function RemoteStorage() {
     setPlayingId(null);
   }, []);
 
-  const loadStorageFiles = useCallback(async (
-    append = false,
-    requestVersion = requestVersionRef.current,
-  ) => {
-    if (requestInFlightRef.current) {
-      return;
-    }
-
-    requestInFlightRef.current = true;
-
-    try {
-      if (append) {
-        setIsLoadingMore(true);
-      } else {
-        setIsLoading(true);
-        setError(null);
-      }
-
-      const nextSkip = append ? loadedCountRef.current : 0;
-      const [sortBy, sortOrder] = sortValue.split("-") as [string, string];
-      const response = await apiClient.listStoredAudioFiles({
-        projectId,
-        voiceId,
-        dateFrom,
-        dateTo,
-        minDuration: minDuration ? Number(minDuration) : null,
-        maxDuration: maxDuration ? Number(maxDuration) : null,
-        searchText: deferredSearchQuery.trim() || null,
-        fileFormat: formatFilter,
-        sortBy:
-          sortBy === "date"
-            ? "created_at"
-            : sortBy === "duration"
-              ? "duration_seconds"
-              : sortBy,
-        sortOrder,
-        skip: nextSkip,
-        limit: REMOTE_STORAGE_BATCH_SIZE,
-      });
-
-      if (requestVersion !== requestVersionRef.current) {
+  const loadStorageFiles = useCallback(
+    async (append = false, requestVersion = requestVersionRef.current) => {
+      if (requestInFlightRef.current) {
         return;
       }
 
-      let nextLoadedCount = 0;
-      setFiles((current) => {
-        const nextFiles = append ? mergeFiles(current, response.files) : response.files;
-        nextLoadedCount = nextFiles.length;
-        return nextFiles;
-      });
-      loadedCountRef.current = nextLoadedCount;
-      setQuotaBytes(response.quotaBytes);
-      setUsedBytes(response.usedBytes);
-      setFileCount(response.fileCount);
-      setTotalCount(response.totalCount);
-      setHasMore(nextLoadedCount < response.totalCount);
-    } catch (err: any) {
-      setError(
-        err?.detail || err?.message || "Failed to load remote storage files",
-      );
-      if (!append) {
-        setFiles([]);
+      requestInFlightRef.current = true;
+
+      try {
+        if (append) {
+          setIsLoadingMore(true);
+        } else {
+          setIsLoading(true);
+          setError(null);
+        }
+
+        const nextSkip = append ? loadedCountRef.current : 0;
+        const [sortBy, sortOrder] = sortValue.split("-") as [string, string];
+        const response = await apiClient.listStoredAudioFiles({
+          projectId,
+          voiceId,
+          dateFrom,
+          dateTo,
+          minDuration: minDuration ? Number(minDuration) : null,
+          maxDuration: maxDuration ? Number(maxDuration) : null,
+          searchText: deferredSearchQuery.trim() || null,
+          fileFormat: formatFilter,
+          sortBy:
+            sortBy === "date"
+              ? "created_at"
+              : sortBy === "duration"
+                ? "duration_seconds"
+                : sortBy,
+          sortOrder,
+          skip: nextSkip,
+          limit: REMOTE_STORAGE_BATCH_SIZE,
+        });
+
+        if (requestVersion !== requestVersionRef.current) {
+          return;
+        }
+
+        let nextLoadedCount = 0;
+        setFiles((current) => {
+          const nextFiles = append
+            ? mergeFiles(current, response.files)
+            : response.files;
+          nextLoadedCount = nextFiles.length;
+          return nextFiles;
+        });
+        loadedCountRef.current = nextLoadedCount;
+        setQuotaBytes(response.quotaBytes);
+        setUsedBytes(response.usedBytes);
+        setFileCount(response.fileCount);
+        setTotalCount(response.totalCount);
+        setHasMore(nextLoadedCount < response.totalCount);
+      } catch (err: any) {
+        setError(
+          err?.detail || err?.message || "Failed to load remote storage files",
+        );
+        if (!append) {
+          setFiles([]);
+        }
+      } finally {
+        if (requestVersion === requestVersionRef.current) {
+          setIsLoading(false);
+          setIsLoadingMore(false);
+          requestInFlightRef.current = false;
+        }
       }
-    } finally {
-      if (requestVersion === requestVersionRef.current) {
-        setIsLoading(false);
-        setIsLoadingMore(false);
-        requestInFlightRef.current = false;
-      }
-    }
-  }, [
-    deferredSearchQuery,
-    dateFrom,
-    dateTo,
-    formatFilter,
-    maxDuration,
-    minDuration,
-    projectId,
-    sortValue,
-    voiceId,
-  ]);
+    },
+    [
+      deferredSearchQuery,
+      dateFrom,
+      dateTo,
+      formatFilter,
+      maxDuration,
+      minDuration,
+      projectId,
+      sortValue,
+      voiceId,
+    ],
+  );
 
   useEffect(() => {
     requestVersionRef.current += 1;
@@ -632,7 +634,10 @@ export function RemoteStorage() {
       setSelectedIds((current) =>
         current.filter((selectedId) => !targetIds.has(selectedId)),
       );
-      loadedCountRef.current = Math.max(0, loadedCountRef.current - targetFiles.length);
+      loadedCountRef.current = Math.max(
+        0,
+        loadedCountRef.current - targetFiles.length,
+      );
       setFileCount((current) => Math.max(0, current - targetFiles.length));
       setTotalCount((current) => {
         const nextCount = Math.max(0, current - targetFiles.length);
@@ -882,13 +887,20 @@ export function RemoteStorage() {
                       <div className="relative lg:col-span-2 xl:col-span-1">
                         <Input
                           value={searchQuery}
-                          onChange={(event) => setSearchQuery(event.target.value)}
+                          onChange={(event) =>
+                            setSearchQuery(event.target.value)
+                          }
                           placeholder="Search prompts, projects, or formats"
                           className="pl-10"
                         />
                       </div>
 
-                      <Select value={projectId || "ALL"} onValueChange={(value) => setProjectId(value === "ALL" ? null : value)}>
+                      <Select
+                        value={projectId || "ALL"}
+                        onValueChange={(value: string) =>
+                          setProjectId(value === "ALL" ? null : value)
+                        }
+                      >
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Project" />
                         </SelectTrigger>
@@ -902,7 +914,12 @@ export function RemoteStorage() {
                         </SelectContent>
                       </Select>
 
-                      <Select value={voiceId || "ALL"} onValueChange={(value) => setVoiceId(value === "ALL" ? null : value)}>
+                      <Select
+                        value={voiceId || "ALL"}
+                        onValueChange={(value: string) =>
+                          setVoiceId(value === "ALL" ? null : value)
+                        }
+                      >
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Voice" />
                         </SelectTrigger>
@@ -917,16 +934,51 @@ export function RemoteStorage() {
                       </Select>
 
                       <div className="grid grid-cols-2 gap-3 lg:col-span-2 xl:col-span-1">
-                        <Input type="date" value={dateFrom || ""} onChange={(event) => setDateFrom(event.target.value || null)} />
-                        <Input type="date" value={dateTo || ""} onChange={(event) => setDateTo(event.target.value || null)} />
+                        <Input
+                          type="date"
+                          value={dateFrom || ""}
+                          onChange={(event) =>
+                            setDateFrom(event.target.value || null)
+                          }
+                        />
+                        <Input
+                          type="date"
+                          value={dateTo || ""}
+                          onChange={(event) =>
+                            setDateTo(event.target.value || null)
+                          }
+                        />
                       </div>
 
                       <div className="grid grid-cols-2 gap-3 lg:col-span-2 xl:col-span-1">
-                        <Input type="number" min="0" step="0.1" value={minDuration} onChange={(event) => setMinDuration(event.target.value)} placeholder="Min duration (s)" />
-                        <Input type="number" min="0" step="0.1" value={maxDuration} onChange={(event) => setMaxDuration(event.target.value)} placeholder="Max duration (s)" />
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={minDuration}
+                          onChange={(event) =>
+                            setMinDuration(event.target.value)
+                          }
+                          placeholder="Min duration (s)"
+                        />
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={maxDuration}
+                          onChange={(event) =>
+                            setMaxDuration(event.target.value)
+                          }
+                          placeholder="Max duration (s)"
+                        />
                       </div>
 
-                      <Select value={sortValue} onValueChange={(value: SortValue) => setSortValue(value)}>
+                      <Select
+                        value={sortValue}
+                        onValueChange={(value: SortValue) =>
+                          setSortValue(value)
+                        }
+                      >
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Sort files" />
                         </SelectTrigger>
@@ -939,7 +991,10 @@ export function RemoteStorage() {
                         </SelectContent>
                       </Select>
 
-                      <Select value={formatFilter} onValueChange={setFormatFilter}>
+                      <Select
+                        value={formatFilter}
+                        onValueChange={setFormatFilter}
+                      >
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Format" />
                         </SelectTrigger>
@@ -954,7 +1009,12 @@ export function RemoteStorage() {
                     </div>
 
                     {selectionMode && (
-                      <Button variant="outline" className="gap-2" onClick={handleSelectAllVisible} disabled={files.length === 0}>
+                      <Button
+                        variant="outline"
+                        className="gap-2"
+                        onClick={handleSelectAllVisible}
+                        disabled={files.length === 0}
+                      >
                         <CheckSquare className="h-4 w-4" />
                         {allVisibleSelected ? "Deselect All" : "Select All"}
                       </Button>
@@ -1031,13 +1091,13 @@ export function RemoteStorage() {
                   {isLoading ? (
                     <div className="flex h-full min-h-[280px] items-center justify-center gap-3 p-6 text-sm text-muted-foreground">
                       <Loader2 className="h-5 w-5 animate-spin" />
-                          Loading audio library...
+                      Loading audio library...
                     </div>
                   ) : hasNoFiles ? (
                     <div className="p-10">
                       <div className="rounded-3xl border border-dashed border-border/70 bg-secondary/10 px-6 py-14 text-center">
                         <Waves className="mx-auto h-12 w-12 text-muted-foreground/60" />
-                          <h3 className="mt-4 text-xl font-semibold text-foreground">
+                        <h3 className="mt-4 text-xl font-semibold text-foreground">
                           Your audio library is empty
                         </h3>
                         <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
@@ -1050,7 +1110,7 @@ export function RemoteStorage() {
                     <div className="p-10">
                       <div className="rounded-3xl border border-dashed border-border/70 bg-secondary/10 px-6 py-14 text-center">
                         <Search className="mx-auto h-12 w-12 text-muted-foreground/60" />
-                          <h3 className="mt-4 text-xl font-semibold text-foreground">
+                        <h3 className="mt-4 text-xl font-semibold text-foreground">
                           No files match the current filters
                         </h3>
                         <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">

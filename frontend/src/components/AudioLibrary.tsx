@@ -261,13 +261,7 @@ export function AudioLibrary({
 
   const handleListScroll = useCallback(() => {
     const viewport = listViewportRef.current;
-    if (
-      !viewport ||
-      !onReachEnd ||
-      !hasMore ||
-      isLoading ||
-      isLoadingMore
-    ) {
+    if (!viewport || !onReachEnd || !hasMore || isLoading || isLoadingMore) {
       return;
     }
 
