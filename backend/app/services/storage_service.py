@@ -220,3 +220,29 @@ class SupabaseStorageService:
         )
         proxy_url = cls.build_proxy_url(object_path)
         return object_path, proxy_url
+
+    @classmethod
+    def store_audio_bytes(
+        cls,
+        content: bytes,
+        *,
+        file_stem: str,
+        project_id: Optional[str] = None,
+        voice_id: Optional[str] = None,
+        extension: str = "wav",
+        content_type: str = "audio/wav",
+    ) -> Tuple[str, str]:
+        """Upload in-memory audio bytes and return both the storage path and proxy URL."""
+        object_path = cls.build_object_path(
+            file_stem=file_stem,
+            project_id=project_id,
+            voice_id=voice_id,
+            extension=extension,
+        )
+        stored_object_path = cls.upload_audio_bytes(
+            content,
+            object_path=object_path,
+            content_type=content_type,
+        )
+        proxy_url = cls.build_proxy_url(stored_object_path)
+        return stored_object_path, proxy_url

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import {
-  AlertCircle,
   CheckSquare,
   Database,
   Download,
@@ -46,6 +45,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { StatusToast } from "./ui/status-toast";
 import { cn } from "./ui/utils";
 
 const DEFAULT_SORT = "date-desc";
@@ -602,9 +602,16 @@ export function RemoteStorage() {
   const openDeleteDialog = (targetFiles: StoredAudioFile[]) => {
     setDeleteDialogFiles(targetFiles);
   };
+  const clearToast = useCallback(() => {
+    setError(null);
+  }, []);
 
   return (
     <div className="relative h-full p-6">
+      {error && (
+        <StatusToast tone="error" message={error} onClose={clearToast} />
+      )}
+
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border border-border/50 bg-white shadow-sm">
         <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 md:p-8 lg:p-10">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -630,14 +637,6 @@ export function RemoteStorage() {
               </Button>
             </div>
           </div>
-
-          {error && (
-            <Alert className="border-red-200 bg-red-50 text-red-950">
-              <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Storage action failed</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
 
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-8 xl:grid-cols-[320px_minmax(0,1fr)]">
             <div className="space-y-6">

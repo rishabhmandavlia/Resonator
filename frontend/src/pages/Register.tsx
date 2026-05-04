@@ -19,6 +19,10 @@ import {
   InputOTPSlot,
 } from "../components/ui/input-otp";
 import { Label } from "../components/ui/label";
+import {
+  PasswordValidator,
+  validatePassword,
+} from "../components/PasswordValidator";
 import { GoogleIcon } from "../components/ui/provider-icons";
 import type { RegistrationChallengeResponse } from "../services/api";
 import { useAuth } from "../services/auth";
@@ -84,6 +88,10 @@ export function Register() {
   );
   const displayError = formError || error;
   const isOtpStep = challenge !== null;
+  const passwordValidation = useMemo(
+    () => validatePassword(password, email),
+    [email, password],
+  );
   const oauthLinkChallenge =
     useMemo<RegistrationChallengeResponse | null>(() => {
       if (!oauthLinkMode) {
@@ -153,6 +161,11 @@ export function Register() {
     event.preventDefault();
     setFormError(null);
     clearError();
+
+    if (!passwordValidation.valid) {
+      setFormError(passwordValidation.errors[0]);
+      return;
+    }
 
     if (password !== confirmPassword) {
       setFormError("Password and confirm password must match.");
@@ -348,7 +361,7 @@ export function Register() {
                             setFormError(null);
                           }
                         }}
-                        placeholder="Minimum 8 characters"
+                          placeholder="Minimum 12 characters"
                         className="pr-11"
                         required
                       />
@@ -413,12 +426,18 @@ export function Register() {
                         Password and confirm password must match.
                       </p>
                     )}
+                    <PasswordValidator validation={passwordValidation} />
                   </div>
 
                   <Button
                     type="submit"
                     className="h-11 w-full rounded-xl bg-slate-900 text-white hover:bg-slate-800"
-                    disabled={isSubmitting || isLoading || !passwordsMatch}
+                    disabled={
+                      isSubmitting ||
+                      isLoading ||
+                      !passwordsMatch ||
+                      !passwordValidation.valid
+                    }
                   >
                     {isSubmitting ? "Sending code..." : "Create account"}
                   </Button>

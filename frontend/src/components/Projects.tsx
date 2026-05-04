@@ -3,10 +3,15 @@
  * Manage TTS projects integrated with backend API
  */
 
-import { type MouseEvent, useDeferredValue, useEffect, useState } from "react";
+import {
+  type MouseEvent,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useState,
+} from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
-  AlertCircle,
   ArrowLeft,
   Clock,
   Edit2,
@@ -52,9 +57,19 @@ import {
   SelectValue,
 } from "./ui/select";
 import { Textarea } from "./ui/textarea";
+import { StatusToast } from "./ui/status-toast";
 
 type Project = ProjectSummary;
 type ProjectDateFilter = "updated-desc" | "created-desc" | "created-asc";
+
+const PROJECT_COLOR_CLASSES = [
+  "bg-gradient-to-br from-sky-500 to-cyan-500",
+  "bg-gradient-to-br from-emerald-500 to-teal-500",
+  "bg-gradient-to-br from-amber-500 to-orange-500",
+  "bg-gradient-to-br from-rose-500 to-pink-500",
+  "bg-gradient-to-br from-violet-500 to-indigo-500",
+  "bg-gradient-to-br from-fuchsia-500 to-purple-500",
+] as const;
 
 const EMPTY_FORM = {
   name: "",
@@ -62,6 +77,10 @@ const EMPTY_FORM = {
 };
 
 const DEFAULT_DATE_FILTER: ProjectDateFilter = "updated-desc";
+
+function getColorForProject(index: number) {
+  return PROJECT_COLOR_CLASSES[index % PROJECT_COLOR_CLASSES.length];
+}
 
 export function Projects() {
   const { hasValidActiveAccount, isLoading: authLoading, user } = useAuth();
@@ -85,6 +104,10 @@ export function Projects() {
   const [dateFilter, setDateFilter] =
     useState<ProjectDateFilter>(DEFAULT_DATE_FILTER);
   const [retryCount, setRetryCount] = useState(0);
+  const clearToast = useCallback(() => {
+    setError(null);
+    setSuccess(null);
+  }, []);
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const normalizedProjectQuery = deferredSearchQuery.trim().toLowerCase();
@@ -153,7 +176,6 @@ export function Projects() {
       setFormData(EMPTY_FORM);
       setIsCreateDialogOpen(false);
       setSuccess("Project created successfully!");
-      setTimeout(() => setSuccess(null), 2000);
     } catch (err: any) {
       setError(err?.detail || "Failed to create project");
     } finally {
@@ -204,7 +226,6 @@ export function Projects() {
 
       setEditingProject(null);
       setSuccess("Project updated successfully!");
-      setTimeout(() => setSuccess(null), 2000);
     } catch (err: any) {
       setError(err?.detail || "Failed to update project");
     } finally {
@@ -254,7 +275,6 @@ export function Projects() {
       setProjectPendingDelete(null);
       setDeleteProjectAudioFiles(false);
       setSuccess("Project deleted successfully!");
-      setTimeout(() => setSuccess(null), 2000);
     } catch (err: any) {
       const message = err?.detail || "Failed to delete project";
       setDeleteError(message);
@@ -299,18 +319,12 @@ export function Projects() {
   const hasProjectMatches = visibleProjects.length > 0;
   const hasProjectFilters =
     searchQuery.trim().length > 0 || dateFilter !== DEFAULT_DATE_FILTER;
-
-  const getColorForProject = (index: number) => {
-    const colors = [
-      "bg-blue-500",
-      "bg-cyan-500",
-      "bg-emerald-500",
-      "bg-amber-500",
-      "bg-rose-500",
-      "bg-indigo-500",
-    ];
-    return colors[index % colors.length];
-  };
+  const toastNotice =
+    error !== null
+      ? { tone: "error" as const, message: error }
+      : success !== null
+        ? { tone: "success" as const, message: success }
+        : null;
 
   return (
     <>
@@ -463,32 +477,6 @@ export function Projects() {
                 </div>
               )}
 
-              {success && (
-                <Alert className="border border-green-200 bg-green-50">
-                  <AlertDescription className="text-green-800">
-                    {success}
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              {error && (
-                <Alert className="flex items-center justify-between border border-red-200 bg-red-50">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4 flex-shrink-0 text-red-600" />
-                    <AlertDescription className="text-red-800">
-                      {error}
-                    </AlertDescription>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => loadProjects()}
-                  >
-                    Try Again
-                  </Button>
-                </Alert>
-              )}
-
               {isLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <p className="text-gray-600">Loading projects...</p>
@@ -551,58 +539,36 @@ export function Projects() {
                               <FolderKanban className="h-6 w-6" />
                             </button>
 
-                            {isOwned ? (
-                              <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-muted-foreground"
-                                  onClick={() => openEditProject(project)}
-                                >
-                                  <Edit2 className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
-                                  onClick={() => requestDeleteProject(project)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            ) : (
-                              <Badge variant="outline">Shared</Badge>
-                            )}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => setSelectedProject(project)}
-                            className="text-left"
-                          >
-                            <h3
-                              className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
-                              title={project.name}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedProject(project)}
+                              className="text-left"
                             >
-                              {project.name}
-                            </h3>
-                            {project.description && (
-                              <p className="mt-1 line-clamp-2 text-sm text-gray-600">
-                                {project.description}
-                              </p>
-                            )}
-                            <div className="mt-2 flex items-center gap-2">
-                              <Badge
-                                variant="secondary"
-                                className="bg-secondary/50 text-xs font-normal"
+                              <h3
+                                className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
+                                title={project.name}
                               >
-                                Workspace Ready
-                              </Badge>
-                              {!isOwned && (
-                                <Badge variant="outline">Shared</Badge>
+                                {project.name}
+                              </h3>
+                              {project.description && (
+                                <p className="mt-1 line-clamp-2 text-sm text-gray-600">
+                                  {project.description}
+                                </p>
                               )}
-                            </div>
-                          </button>
+                              <div className="mt-2 flex items-center gap-2">
+                                <Badge
+                                  variant="secondary"
+                                  className="bg-secondary/50 text-xs font-normal"
+                                >
+                                  Workspace Ready
+                                </Badge>
+                                {!isOwned && (
+                                  <Badge variant="outline">Shared</Badge>
+                                )}
+                              </div>
+                            </button>
+
+                          </div>
 
                           <div className="flex items-center justify-between border-t border-border/50 pt-4">
                             <div className="flex items-center gap-1.5 text-sm text-muted-foreground">

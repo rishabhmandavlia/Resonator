@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -25,7 +26,14 @@ OTP_LENGTH = 6
 OTP_EXPIRY_MINUTES = 5
 OTP_MAX_ATTEMPTS = 5
 OTP_RESEND_COOLDOWN_SECONDS = 30
-PASSWORD_MIN_LENGTH = 8
+PASSWORD_MIN_LENGTH = 12
+COMMON_PASSWORDS = {
+    "password",
+    "password123",
+    "12345678",
+    "qwerty",
+    "111111",
+}
 
 REGISTER_RATE_LIMIT = (5, 15 * 60)
 VERIFY_RATE_LIMIT = (10, 15 * 60)
@@ -126,11 +134,45 @@ class EmailAuthService:
         _RATE_LIMIT_STORE[key] = recent_attempts
 
     @staticmethod
-    def validate_password(password: str) -> None:
+    def get_password_validation_errors(
+        password: str,
+        email: str | None = None,
+    ) -> list[str]:
+        errors: list[str] = []
+
         if len(password) < PASSWORD_MIN_LENGTH:
+            errors.append(
+                f"Password must be at least {PASSWORD_MIN_LENGTH} characters"
+            )
+        if not re.search(r"[A-Z]", password):
+            errors.append("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", password):
+            errors.append("Password must contain at least one lowercase letter")
+        if not re.search(r"[0-9]", password):
+            errors.append("Password must contain at least one number")
+        if not re.search(r"[!@#$%^&*()\[\]{}\-_=+|:;\"'<>,./?]", password):
+            errors.append("Password must contain at least one special character")
+        if re.search(r"\s", password):
+            errors.append("Password cannot contain spaces")
+
+        normalized_password = password.lower()
+        if normalized_password in COMMON_PASSWORDS:
+            errors.append("Password is too common")
+
+        if email:
+            email_prefix = email.split("@", 1)[0].strip().lower()
+            if len(email_prefix) >= 3 and email_prefix in normalized_password:
+                errors.append("Password cannot contain your email prefix")
+
+        return errors
+
+    @staticmethod
+    def validate_password(password: str, email: str | None = None) -> None:
+        errors = EmailAuthService.get_password_validation_errors(password, email)
+        if errors:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
+                detail=errors[0],
             )
 
     @staticmethod
@@ -141,7 +183,7 @@ class EmailAuthService:
                 detail="Email/password sign-in is already enabled for this account",
             )
 
-        EmailAuthService.validate_password(password)
+        EmailAuthService.validate_password(password, user.email)
         user.password_hash = EmailAuthService.hash_password(password)
         user.has_email_auth = True
         user.is_verified = True
@@ -268,7 +310,7 @@ class EmailAuthService:
     def start_registration(db: Session, request: Request, email: str, password: str) -> dict[str, str | int]:
         normalized_email = EmailAuthService.normalize_email(email)
         EmailAuthService.enforce_rate_limit("register", normalized_email, request)
-        EmailAuthService.validate_password(password)
+        EmailAuthService.validate_password(password, email)
 
         existing_user = (
             db.query(User)

@@ -3,11 +3,10 @@
  * Display saved generation history across all projects with advanced filtering.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Search, Filter, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Search, Filter, X } from "lucide-react";
 
 import { AudioLibrary, type AudioLibraryItem } from "./AudioLibrary";
-import { Alert, AlertDescription } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
@@ -26,6 +25,7 @@ import {
   type FilteredGenerationsResponse,
 } from "../services/api";
 import { useAuth } from "../services/auth";
+import { StatusToast } from "./ui/status-toast";
 
 interface FilterState {
   searchText: string;
@@ -54,6 +54,9 @@ export function HistoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [totalCount, setTotalCount] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
+  const clearToast = useCallback(() => {
+    setError(null);
+  }, []);
 
   const [page, setPage] = useState(0);
   const pageSize = 50;
@@ -194,6 +197,10 @@ export function HistoryPage() {
 
   return (
     <div className="h-full p-6">
+      {error && (
+        <StatusToast tone="error" message={error} onClose={clearToast} />
+      )}
+
       <div className="flex h-full min-h-0 flex-col rounded-3xl border border-border/50 bg-white shadow-sm">
         <div className="flex-1 min-h-0 space-y-8 overflow-y-auto p-6 md:p-8 lg:p-10">
           <div className="flex flex-col space-y-3">
@@ -445,15 +452,6 @@ export function HistoryPage() {
               </div>
             )}
           </div>
-
-          {error && (
-            <Alert className="border border-red-200 bg-red-50">
-              <AlertCircle className="h-4 w-4 text-red-600" />
-              <AlertDescription className="ml-2 text-red-800">
-                {error}
-              </AlertDescription>
-            </Alert>
-          )}
 
           <AudioLibrary
             items={itemsWithProjectNames}

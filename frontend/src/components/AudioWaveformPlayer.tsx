@@ -5,6 +5,7 @@ import { Button } from "./ui/button";
 interface AudioWaveformPlayerProps {
   audioUrl: string;
   voiceName?: string;
+  fileFormat?: string;
   durationSeconds?: number;
   onDownload?: () => void;
 }
@@ -22,6 +23,7 @@ function formatTime(seconds: number): string {
 export function AudioWaveformPlayer({
   audioUrl,
   voiceName,
+  fileFormat,
   durationSeconds,
   onDownload,
 }: AudioWaveformPlayerProps) {
@@ -267,6 +269,7 @@ export function AudioWaveformPlayer({
 
   const displayDuration = duration || durationSeconds || 0;
   const progress = displayDuration > 0 ? currentTime / displayDuration : 0;
+  const downloadFormat = (fileFormat || "wav").toUpperCase();
 
   return (
     <div className="rounded-2xl border border-border/50 bg-gradient-to-b from-card via-card to-secondary/30 shadow-lg overflow-hidden">
@@ -381,7 +384,7 @@ export function AudioWaveformPlayer({
           onClick={onDownload}
         >
           <Download className="h-3.5 w-3.5 text-current" strokeWidth={2.2} />
-          Download WAV
+          Download {downloadFormat}
         </Button>
       </div>
     </div>

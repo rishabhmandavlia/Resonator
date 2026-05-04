@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import {
   AlertTriangle,
-  CheckCircle2,
   KeyRound,
   Loader2,
   Mail,
@@ -16,6 +15,11 @@ import {
   type CurrentUserResponse,
   type RegistrationChallengeResponse,
 } from "../services/api";
+import {
+  PasswordValidator,
+  validatePassword,
+} from "./PasswordValidator";
+import { StatusToast } from "./ui/status-toast";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -157,6 +161,9 @@ export function SettingsPage() {
     useState(false);
   const emailValidationRequestId = useRef(0);
   const emailVerificationSectionRef = useRef<HTMLDivElement | null>(null);
+  const closeNotice = useCallback(() => {
+    setNotice(null);
+  }, []);
 
   useEffect(() => {
     const loadCurrentUser = async () => {
@@ -363,6 +370,19 @@ export function SettingsPage() {
     deleteConfirmationMatches &&
     (!currentUser?.has_email_auth ||
       deleteForm.currentPassword.trim().length > 0);
+  const passwordValidation = useMemo(
+    () => validatePassword(passwordForm.newPassword, currentUser?.email),
+    [currentUser?.email, passwordForm.newPassword],
+  );
+  const passwordConfirmationMatches =
+    passwordForm.newPassword === passwordForm.confirmPassword;
+  const canSubmitPasswordChange =
+    passwordForm.newPassword.length > 0 &&
+    passwordForm.confirmPassword.length > 0 &&
+    passwordValidation.valid &&
+    passwordConfirmationMatches &&
+    (!currentUser?.has_email_auth ||
+      passwordForm.currentPassword.trim().length > 0);
 
   const handleProfileSubmit = async (
     event: React.FormEvent<HTMLFormElement>,
@@ -521,10 +541,40 @@ export function SettingsPage() {
       return;
     }
 
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    if (
+      currentUser.has_email_auth &&
+      !passwordForm.currentPassword.trim()
+    ) {
+      setNotice({
+        tone: "error",
+        message: "Current password is required",
+      });
+      return;
+    }
+
+    if (!passwordValidation.valid) {
+      setNotice({
+        tone: "error",
+        message: passwordValidation.errors[0],
+      });
+      return;
+    }
+
+    if (!passwordConfirmationMatches) {
       setNotice({
         tone: "error",
         message: "New password confirmation does not match",
+      });
+      return;
+    }
+
+    if (
+      currentUser.has_email_auth &&
+      passwordForm.currentPassword === passwordForm.newPassword
+    ) {
+      setNotice({
+        tone: "error",
+        message: "New password must be different from the current password",
       });
       return;
     }
@@ -705,26 +755,6 @@ export function SettingsPage() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 md:px-8">
-            {notice && (
-              <Alert
-                className={
-                  notice.tone === "success"
-                    ? "mb-6 border-green-200 bg-green-50 text-green-950"
-                    : "mb-6 border-red-200 bg-red-50 text-red-950"
-                }
-              >
-                {notice.tone === "success" ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : (
-                  <AlertTriangle className="h-4 w-4" />
-                )}
-                <AlertTitle>
-                  {notice.tone === "success" ? "Updated" : "Action failed"}
-                </AlertTitle>
-                <AlertDescription>{notice.message}</AlertDescription>
-              </Alert>
-            )}
-
             <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
               <Card className="border-border/60 shadow-sm">
                 <CardHeader>
@@ -1171,7 +1201,7 @@ export function SettingsPage() {
                       </CardTitle>
                       <CardDescription>
                         {currentUser.has_email_auth
-                          ? "Use a strong password with at least 8 characters."
+                          ? "Use at least 12 characters with uppercase, lowercase, a number, and a symbol."
                           : "Enable email/password sign-in for this same account without creating a second user."}
                       </CardDescription>
                     </CardHeader>
@@ -1238,6 +1268,15 @@ export function SettingsPage() {
                           </div>
                         </div>
 
+                        {passwordForm.confirmPassword.length > 0 &&
+                          !passwordConfirmationMatches && (
+                            <p className="text-sm text-red-600">
+                              New password confirmation does not match.
+                            </p>
+                          )}
+
+                        <PasswordValidator validation={passwordValidation} />
+
                         {!currentUser.has_email_auth && (
                           <Alert className="border-sky-200 bg-sky-50 text-sky-950">
                             <KeyRound className="h-4 w-4" />
@@ -1253,7 +1292,12 @@ export function SettingsPage() {
                         )}
 
                         <div className="flex justify-end">
-                          <Button type="submit" disabled={isChangingPassword}>
+                          <Button
+                            type="submit"
+                            disabled={
+                              isChangingPassword || !canSubmitPasswordChange
+                            }
+                          >
                             {isChangingPassword
                               ? currentUser.has_email_auth
                                 ? "Updating..."
@@ -1343,6 +1387,14 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {notice && (
+        <StatusToast
+          tone={notice.tone}
+          message={notice.message}
+          onClose={closeNotice}
+        />
+      )}
 
       <Dialog
         open={isDeleteDialogOpen}

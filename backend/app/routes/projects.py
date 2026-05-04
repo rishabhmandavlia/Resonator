@@ -889,7 +889,7 @@ def generate_audio_standalone(
         )
         
         # Generate audio using TTS service
-        audio_path, duration, audio_url = TTSService.generate_audio(
+        audio_path, duration, audio_url, actual_format = TTSService.generate_audio(
             text=payload.text,
             voice_id=payload.voice_id,
             speed=payload.speed,
@@ -910,7 +910,7 @@ def generate_audio_standalone(
             sample_rate=payload.sample_rate,
             duration_seconds=duration,
             audio_path=audio_path,
-            file_format=payload.audio_format,
+            file_format=actual_format,
             title=payload.title,
         )
 
@@ -939,7 +939,7 @@ def generate_audio_standalone(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except RuntimeError as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate audio")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error during generation: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
@@ -967,7 +967,7 @@ def generate_audio(
         logger.info(f"Generating audio for user {current_user}, project {project_id}")
         
         # Generate audio using TTS service
-        audio_path, duration, audio_url = TTSService.generate_audio(
+        audio_path, duration, audio_url, actual_format = TTSService.generate_audio(
             text=payload.text,
             voice_id=payload.voice_id,
             speed=payload.speed,
@@ -988,7 +988,7 @@ def generate_audio(
             sample_rate=payload.sample_rate,
             duration_seconds=duration,
             audio_path=audio_path,
-            file_format=payload.audio_format,
+            file_format=actual_format,
             title=payload.title,
         )
 
@@ -1017,7 +1017,7 @@ def generate_audio(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except RuntimeError as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate audio")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error during generation: {e}")
         db.rollback()

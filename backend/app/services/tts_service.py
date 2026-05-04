@@ -5,10 +5,12 @@ Handles voice model loading, audio generation, and storage.
 
 import logging
 import math
+import os
+import warnings
+from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple
 import uuid
-from datetime import datetime
 
 import numpy as np
 
@@ -48,6 +50,32 @@ except ImportError as kokoro_import_error:
     logger.warning(f"Kokoro package not available. TTS generation is disabled: {kokoro_import_error}")
 
 try:
+    import imageio_ffmpeg
+    IMAGEIO_FFMPEG_AVAILABLE = True
+    bundled_ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    bundled_ffmpeg_dir = str(Path(bundled_ffmpeg_path).parent)
+    os.environ["PATH"] = (
+        f"{bundled_ffmpeg_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        if bundled_ffmpeg_dir not in os.environ.get("PATH", "")
+        else os.environ.get("PATH", "")
+    )
+except ImportError as imageio_ffmpeg_import_error:
+    imageio_ffmpeg = None  # type: ignore[assignment]
+    IMAGEIO_FFMPEG_AVAILABLE = False
+    bundled_ffmpeg_path = None
+    logger.warning(
+        "imageio-ffmpeg not available. Bundled ffmpeg conversion will be disabled: %s",
+        imageio_ffmpeg_import_error,
+    )
+
+warnings.filterwarnings(
+    "ignore",
+    message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work",
+    category=RuntimeWarning,
+    module="pydub.utils",
+)
+
+try:
     from pydub import AudioSegment
     PYDUB_AVAILABLE = True
 except ImportError as pydub_import_error:
@@ -62,10 +90,11 @@ KOKORO_CONFIG_PATH = MODEL_DIR / "config.json"
 KOKORO_MODEL_PATH = MODEL_DIR / "kokoro-v1_0.pth"
 AUDIO_SAMPLE_RATE = 24000
 KOKORO_REPO_ID = "hexgrad/Kokoro-82M"
-AUDIO_OUTPUT_DIR = Path(__file__).parent.parent.parent / "audio_outputs"
-
-# Ensure output directory exists
-AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_CONTENT_TYPES = {
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+    "ogg": "audio/ogg",
+}
 
 
 class TTSService:
@@ -75,6 +104,7 @@ class TTSService:
     _model = None
     _device = None
     _pipelines = {}
+    _ffmpeg_binary: str | None = None
     
     @staticmethod
     def _get_device():
@@ -146,56 +176,105 @@ class TTSService:
         return TTSService._pipelines[language_code]
 
     @staticmethod
-    def _save_audio_file(audio_path: Path, waveform: "torch.Tensor", sample_rate: int = AUDIO_SAMPLE_RATE) -> None:
-        """Write a mono WAV file using 16-bit PCM."""
+    def _build_wav_bytes(
+        waveform: "torch.Tensor",
+        sample_rate: int = AUDIO_SAMPLE_RATE,
+    ) -> bytes:
+        """Encode a mono WAV file in memory using 16-bit PCM."""
         import wave
 
         waveform = waveform.detach().cpu().clamp(-1.0, 1.0)
         pcm_bytes = (waveform * 32767.0).to(torch.int16).numpy().tobytes()
 
-        with wave.open(str(audio_path), "wb") as wav_file:
+        buffer = BytesIO()
+        with wave.open(buffer, "wb") as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm_bytes)
+        return buffer.getvalue()
+
+    @staticmethod
+    def _ensure_ffmpeg_binary() -> str:
+        """Resolve and configure the ffmpeg binary used by pydub exports."""
+        if TTSService._ffmpeg_binary:
+            return TTSService._ffmpeg_binary
+
+        if not PYDUB_AVAILABLE:
+            raise RuntimeError("Audio conversion requires pydub to be installed")
+
+        if IMAGEIO_FFMPEG_AVAILABLE and imageio_ffmpeg is not None:
+            ffmpeg_binary = bundled_ffmpeg_path or imageio_ffmpeg.get_ffmpeg_exe()
+            AudioSegment.converter = ffmpeg_binary
+            AudioSegment.ffmpeg = ffmpeg_binary
+            TTSService._ffmpeg_binary = ffmpeg_binary
+            logger.info("Configured bundled ffmpeg binary for audio conversion: %s", ffmpeg_binary)
+            return ffmpeg_binary
+
+        raise RuntimeError(
+            "MP3/OGG export requires ffmpeg. Install imageio-ffmpeg or configure ffmpeg on PATH."
+        )
 
     @staticmethod
     def _convert_audio_format(
-        input_path: Path,
-        output_path: Path,
+        input_bytes: bytes,
         target_format: str,
-        target_sample_rate: int,
-    ) -> None:
-        """Convert audio file to target format and sample rate."""
+    ) -> Tuple[bytes, str]:
+        """Convert WAV bytes to the requested format in memory."""
+        normalized_format = target_format.lower()
+
+        if normalized_format == "wav":
+            return input_bytes, "wav"
+
         if not PYDUB_AVAILABLE:
-            logger.warning("pydub not available, falling back to WAV format")
-            # Fallback: just copy the file
-            import shutil
-            shutil.copy2(str(input_path), str(output_path))
-            return
+            raise RuntimeError("MP3/OGG export requires pydub to be installed")
 
         try:
-            # Load audio with pydub
-            audio = AudioSegment.from_wav(str(input_path))
+            TTSService._ensure_ffmpeg_binary()
+            audio = AudioSegment.from_file(BytesIO(input_bytes), format="wav")
+            output_buffer = BytesIO()
 
-            # Resample if needed
-            if audio.frame_rate != target_sample_rate:
-                audio = audio.set_frame_rate(target_sample_rate)
+            if normalized_format == "mp3":
+                audio.export(output_buffer, format="mp3", bitrate="192k")
+                return output_buffer.getvalue(), "mp3"
 
-            # Export to target format
-            if target_format.lower() == "mp3":
-                audio.export(str(output_path), format="mp3", bitrate="192k")
-            elif target_format.lower() == "ogg":
-                audio.export(str(output_path), format="ogg")
-            else:
-                # For wav or unknown formats, just copy with resampling
-                audio.export(str(output_path), format="wav")
+            if normalized_format == "ogg":
+                audio.export(output_buffer, format="ogg", codec="libvorbis")
+                return output_buffer.getvalue(), "ogg"
+
+            raise RuntimeError(f"Unsupported audio format requested: {target_format}")
 
         except Exception as e:
-            logger.warning(f"Format conversion failed: {e}, falling back to WAV")
-            # Fallback: just copy the file
-            import shutil
-            shutil.copy2(str(input_path), str(output_path))
+            raise RuntimeError(
+                f"Failed to convert generated audio to {normalized_format.upper()}: {e}"
+            ) from e
+
+    @staticmethod
+    def _get_audio_content_type(audio_format: str) -> str:
+        """Map an audio file format to a content type for upload and proxying."""
+        return AUDIO_CONTENT_TYPES.get(audio_format.lower(), "application/octet-stream")
+
+    @staticmethod
+    def _store_generated_audio(
+        audio_bytes: bytes,
+        *,
+        audio_id: str,
+        project_id: Optional[str],
+        voice_id: str,
+        audio_format: str,
+    ) -> Tuple[str, str]:
+        """Store generated audio directly in Supabase Storage without local files."""
+        if not STORAGE_AVAILABLE:
+            raise RuntimeError("Supabase storage is not available")
+
+        return SupabaseStorageService.store_audio_bytes(
+            audio_bytes,
+            file_stem=audio_id,
+            project_id=project_id,
+            voice_id=voice_id,
+            extension=audio_format,
+            content_type=TTSService._get_audio_content_type(audio_format),
+        )
 
     @staticmethod
     def _apply_pitch_shift(waveform: "torch.Tensor", pitch: float) -> "torch.Tensor":
@@ -236,17 +315,16 @@ class TTSService:
         speed: float = 1.0,
         pitch: float = 1.0,
         project_id: Optional[str] = None,
-    ) -> Tuple[str, float, str]:
+    ) -> Tuple[str, float, str, str]:
         """
         Generate mock audio data for testing when PyTorch is not available.
-        Creates a simple WAV file with dummy audio.
+        Creates a simple WAV payload with dummy audio.
         """
         try:
             import wave
             import struct
             
             audio_id = str(uuid.uuid4())
-            audio_path = AUDIO_OUTPUT_DIR / f"{audio_id}.wav"
             
             # Calculate duration based on text length and speed
             # Rough estimate: 5 characters per second at normal speed
@@ -266,28 +344,24 @@ class TTSService:
                 sample = int(sample * (0.5 + 0.5 * (i % 1000) / 1000))
                 frames.append(struct.pack('<h', sample))
             
-            # Write WAV file
-            with wave.open(str(audio_path), 'wb') as wav_file:
+            buffer = BytesIO()
+            with wave.open(buffer, 'wb') as wav_file:
                 wav_file.setnchannels(1)  # Mono
                 wav_file.setsampwidth(2)  # 16-bit
                 wav_file.setframerate(sample_rate)
                 wav_file.writeframes(b''.join(frames))
+            audio_bytes = buffer.getvalue()
             
-            logger.info(f"Mock audio generated: {audio_path} (duration: {duration:.2f}s)")
+            logger.info("Mock audio generated in memory (duration: %.2fs)", duration)
 
-            if not STORAGE_AVAILABLE:
-                raise RuntimeError("Supabase storage is not available")
-
-            storage_path, audio_url = SupabaseStorageService.store_audio_file(
-                audio_path,
+            storage_path, audio_url = TTSService._store_generated_audio(
+                audio_bytes,
+                audio_id=audio_id,
                 project_id=project_id,
                 voice_id=voice_id,
+                audio_format="wav",
             )
-            try:
-                audio_path.unlink(missing_ok=True)
-            except Exception:
-                logger.debug("Unable to remove temporary mock audio file: %s", audio_path)
-            return storage_path, duration, audio_url
+            return storage_path, duration, audio_url, "wav"
             
         except Exception as e:
             logger.error(f"Failed to generate mock audio: {e}")
@@ -302,7 +376,7 @@ class TTSService:
         sample_rate: int = 22050,
         audio_format: str = "wav",
         project_id: Optional[str] = None,
-    ) -> Tuple[str, float, str]:
+    ) -> Tuple[str, float, str, str]:
         """
         Generate audio from text using Kokoro TTS.
         
@@ -313,7 +387,7 @@ class TTSService:
             pitch: Pitch multiplier (0.5 - 2.0)
         
         Returns:
-            Tuple of (storage_object_path, duration_seconds, signed_audio_url)
+            Tuple of (storage_object_path, duration_seconds, signed_audio_url, actual_file_format)
         
         Raises:
             ValueError: If inputs are invalid
@@ -383,46 +457,26 @@ class TTSService:
                     logger.warning("Sample rate conversion requested but torchaudio not available, using native rate")
 
             audio_id = str(uuid.uuid4())
-            temp_wav_path = AUDIO_OUTPUT_DIR / f"{audio_id}_temp.wav"
-            final_audio_path = AUDIO_OUTPUT_DIR / f"{audio_id}.{audio_format.lower()}"
-
-            # Save temporary WAV file
-            TTSService._save_audio_file(temp_wav_path, waveform, sample_rate)
-
-            # Convert format if needed
-            if audio_format.lower() == "wav":
-                # No conversion needed, just rename
-                temp_wav_path.rename(final_audio_path)
-            else:
-                # Convert to target format
-                TTSService._convert_audio_format(
-                    temp_wav_path,
-                    final_audio_path,
-                    audio_format,
-                    sample_rate,
-                )
-                # Clean up temp file
-                temp_wav_path.unlink(missing_ok=True)
+            requested_format = audio_format.lower()
+            wav_bytes = TTSService._build_wav_bytes(waveform, sample_rate)
+            audio_bytes, resolved_audio_format = TTSService._convert_audio_format(
+                wav_bytes,
+                requested_format,
+            )
 
             duration = waveform.numel() / sample_rate
 
-            if not STORAGE_AVAILABLE:
-                raise RuntimeError("Supabase storage is not available")
-
-            storage_path, audio_url = SupabaseStorageService.store_audio_file(
-                final_audio_path,
+            storage_path, audio_url = TTSService._store_generated_audio(
+                audio_bytes,
+                audio_id=audio_id,
                 project_id=project_id,
                 voice_id=voice_id,
+                audio_format=resolved_audio_format,
             )
-
-            try:
-                final_audio_path.unlink(missing_ok=True)
-            except Exception:
-                logger.debug("Unable to remove temporary generated audio file: %s", final_audio_path)
             
             logger.info(f"Audio generated successfully: {storage_path} (duration: {duration:.2f}s)")
             
-            return storage_path, duration, audio_url
+            return storage_path, duration, audio_url, resolved_audio_format
             
         except Exception as e:
             logger.error(f"Audio generation failed: {e}")
@@ -486,33 +540,3 @@ class TTSService:
         
         return voices
     
-    @staticmethod
-    def cleanup_old_audio(max_age_hours: int = 24) -> int:
-        """
-        Clean up old audio files.
-        
-        Args:
-            max_age_hours: Maximum age in hours before deletion
-        
-        Returns:
-            Number of files deleted
-        """
-        try:
-            deleted_count = 0
-            now = datetime.now().timestamp()
-            max_age_seconds = max_age_hours * 3600
-            
-            if AUDIO_OUTPUT_DIR.exists():
-                for audio_file in AUDIO_OUTPUT_DIR.glob("*.wav"):
-                    file_age = now - audio_file.stat().st_mtime
-                    if file_age > max_age_seconds:
-                        audio_file.unlink()
-                        deleted_count += 1
-            
-            if deleted_count > 0:
-                logger.info(f"Cleaned up {deleted_count} old audio files")
-            
-            return deleted_count
-        except Exception as e:
-            logger.error(f"Failed to cleanup audio files: {e}")
-            return 0

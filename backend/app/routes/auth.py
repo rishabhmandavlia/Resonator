@@ -11,7 +11,7 @@ from pydantic import BaseModel, EmailStr, Field, field_serializer
 from sqlalchemy.orm import Session
 
 from app.middleware.auth import get_current_user
-from app.services.email_auth_service import EmailAuthService
+from app.services.email_auth_service import EmailAuthService, PASSWORD_MIN_LENGTH
 from app.services.oauth_service import OAuthService
 from database.database import get_db
 from database.models import OAuthIdentity, SessionAccount, User
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class UserRegister(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
 
 
 class UserLogin(BaseModel):
@@ -128,12 +128,12 @@ class VerifyCurrentUserEmailChangeRequest(BaseModel):
 
 
 class SetPasswordRequest(BaseModel):
-    new_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
 
 
 class DeleteAccountRequest(BaseModel):
@@ -732,7 +732,13 @@ async def change_current_user_password(
             detail="Current password is incorrect",
         )
 
-    EmailAuthService.validate_password(payload.new_password)
+    if EmailAuthService.verify_password(payload.new_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current password",
+        )
+
+    EmailAuthService.validate_password(payload.new_password, user.email)
     user.password_hash = EmailAuthService.hash_password(payload.new_password)
     user.updated_at = datetime.utcnow()
     db.commit()

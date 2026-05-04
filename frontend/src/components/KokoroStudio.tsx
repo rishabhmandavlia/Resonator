@@ -3,7 +3,7 @@
  * Text-to-speech generation interface with persistent state management
  */
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "./ui/badge";
 import {
   Card,
@@ -23,7 +23,6 @@ import {
 } from "./ui/select";
 import { Slider } from "./ui/slider";
 import { Sparkles, Wand2, RefreshCw, AlertCircle, Loader } from "lucide-react";
-import { Alert, AlertDescription } from "./ui/alert";
 import { useAuth } from "../services/auth";
 import {
   apiClient,
@@ -35,6 +34,7 @@ import {
 import { usePersistentState } from "../hooks/usePersistentState";
 import { AudioLibrary, type AudioLibraryItem } from "./AudioLibrary";
 import { AudioWaveformPlayer } from "./AudioWaveformPlayer";
+import { StatusToast } from "./ui/status-toast";
 
 // Storage key prefix for this component
 const STORAGE_PREFIX = "kokoro_studio_";
@@ -96,6 +96,10 @@ export function KokoroStudio({
     [],
   );
   const [isLoadingGenerations, setIsLoadingGenerations] = useState(false);
+  const clearToast = useCallback(() => {
+    setError(null);
+    setSuccess(null);
+  }, []);
 
   // Load projects and voices after auth is ready
   useEffect(() => {
@@ -169,17 +173,6 @@ export function KokoroStudio({
     selectedProject,
     setSelectedProject,
   ]);
-
-  // Clear alerts after timeout
-  useEffect(() => {
-    if (error || success) {
-      const timer = setTimeout(() => {
-        if (error) setError(null);
-        if (success) setSuccess(null);
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error, success]);
 
   const loadProjects = async () => {
     try {
@@ -350,7 +343,16 @@ export function KokoroStudio({
     }
 
     try {
-      const filename = `${voice}_${Date.now()}.wav`;
+      const fileFormat =
+        (currentGeneration?.file_format || audioFormat || "wav").toLowerCase();
+      const baseName = (currentGeneration?.title || `${voice}_${Date.now()}`)
+        .trim()
+        .replace(/[<>:"/\\|?*]+/g, " ")
+        .replace(/\s+/g, "_")
+        .replace(/\.[A-Za-z0-9]+$/, "")
+        .replace(/^_+|_+$/g, "");
+      const filename = `${baseName || "audio"}.${fileFormat}`;
+
       await apiClient.downloadAudio(audioUrl, filename);
       setSuccess("Audio downloaded successfully!");
     } catch (err) {
@@ -387,9 +389,23 @@ export function KokoroStudio({
   const isProjectMode =
     !!selectedProject && selectedProject !== STANDALONE_PROJECT_ID;
   const showProjectSelector = !forceStandalone && !lockProjectSelection;
+  const toastNotice =
+    error !== null
+      ? { tone: "error" as const, message: error }
+      : success !== null
+        ? { tone: "success" as const, message: success }
+        : null;
 
   return (
     <div className="w-full h-full flex flex-col bg-gradient-to-br from-background to-secondary/20 overflow-hidden">
+      {toastNotice && (
+        <StatusToast
+          tone={toastNotice.tone}
+          message={toastNotice.message}
+          onClose={clearToast}
+        />
+      )}
+
       {/* Header */}
       <div className="border-b border-border/50 px-4 sm:px-6 py-3 flex-shrink-0 bg-card/50 backdrop-blur">
         <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -409,25 +425,6 @@ export function KokoroStudio({
             {user ? "Ready" : "Offline"}
           </Badge>
         </div>
-      </div>
-
-      {/* Alerts */}
-      <div className="flex-shrink-0 px-4 sm:px-6 py-2 space-y-2">
-        {error && (
-          <Alert className="bg-red-50 border border-red-200 py-2">
-            <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0" />
-            <AlertDescription className="text-red-800 ml-2 text-sm">
-              {error}
-            </AlertDescription>
-          </Alert>
-        )}
-        {success && (
-          <Alert className="bg-green-50 border border-green-200 py-2">
-            <AlertDescription className="text-green-800 text-sm">
-              ✓ {success}
-            </AlertDescription>
-          </Alert>
-        )}
       </div>
 
       {/* Main Content */}
@@ -587,6 +584,7 @@ export function KokoroStudio({
                     <AudioWaveformPlayer
                       audioUrl={audioUrl}
                       voiceName={voiceDisplayName}
+                      fileFormat={currentGeneration?.file_format}
                       durationSeconds={currentGeneration?.duration_seconds}
                       onDownload={handleDownload}
                     />
