@@ -361,7 +361,7 @@ export function Register() {
                             setFormError(null);
                           }
                         }}
-                          placeholder="Minimum 12 characters"
+                        placeholder="Minimum 12 characters"
                         className="pr-11"
                         required
                       />

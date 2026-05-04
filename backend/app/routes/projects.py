@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query, File, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -8,6 +10,8 @@ import json
 import logging
 from urllib.parse import quote
 import uuid
+from dataclasses import dataclass, field
+from threading import Event, Lock, Thread
 
 from app.services.project_service import ProjectService, STANDALONE_PROJECT_NAME
 from app.services.tts_service import TTSService
@@ -18,6 +22,151 @@ from app.middleware.auth import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+@dataclass
+class GenerationJobState:
+    job_id: str
+    user_id: str
+    project_id: str | None
+    payload: "GenerationRequest"
+    status: str = "queued"
+    progress: int = 0
+    stage: str = "Queued"
+    error: str | None = None
+    result: "GenerationResponse | None" = None
+    cancel_event: Event = field(default_factory=Event)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+generation_jobs: dict[str, GenerationJobState] = {}
+generation_jobs_lock = Lock()
+
+
+class GenerationJobResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    stage: str
+    error: Optional[str] = None
+    result: Optional[GenerationResponse] = None
+
+
+class GenerationJobStartResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    stage: str
+
+
+def _get_generation_job(job_id: str) -> GenerationJobState:
+    with generation_jobs_lock:
+        job = generation_jobs.get(job_id)
+
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation job not found")
+
+    return job
+
+
+def _serialize_generation_job(job: GenerationJobState) -> GenerationJobResponse:
+    return GenerationJobResponse(
+        job_id=job.job_id,
+        status=job.status,
+        progress=job.progress,
+        stage=job.stage,
+        error=job.error,
+        result=job.result,
+    )
+
+
+def _update_generation_job(job_id: str, *, status: str | None = None, progress: int | None = None, stage: str | None = None, error: str | None = None, result: GenerationResponse | None = None) -> None:
+    with generation_jobs_lock:
+        job = generation_jobs.get(job_id)
+        if job is None:
+            return
+        if status is not None:
+            job.status = status
+        if progress is not None:
+            job.progress = progress
+        if stage is not None:
+            job.stage = stage
+        if error is not None:
+            job.error = error
+        if result is not None:
+            job.result = result
+
+
+def _run_generation_job(job_id: str) -> None:
+    job = _get_generation_job(job_id)
+    db = next(get_db())
+    try:
+        project: Project | None = None
+        if job.project_id and job.project_id != "standalone":
+            project = ProjectService.get_project(db, job.project_id, job.user_id)
+            if not project_belongs_to_user(project, job.user_id):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+        else:
+            project = ProjectService.get_or_create_standalone_project(db, job.user_id)
+
+        def report(stage: str, percent: int) -> None:
+            _update_generation_job(job_id, status="running", progress=percent, stage=stage)
+
+        _update_generation_job(job_id, status="running", progress=1, stage="Starting generation")
+        audio_path, duration, audio_url, actual_format = TTSService.generate_audio(
+            text=job.payload.text,
+            voice_id=job.payload.voice_id,
+            speed=job.payload.speed,
+            pitch=job.payload.pitch,
+            sample_rate=job.payload.sample_rate,
+            audio_format=job.payload.audio_format,
+            project_id=str(project.id) if project is not None else job.project_id,
+            progress_callback=report,
+            cancel_event=job.cancel_event,
+        )
+
+        generation = create_generation_record(
+            db,
+            project_id=project.id if project is not None else job.project_id,
+            user_id=job.user_id,
+            text=job.payload.text,
+            voice_id=job.payload.voice_id,
+            speed=job.payload.speed,
+            pitch=job.payload.pitch,
+            sample_rate=job.payload.sample_rate,
+            duration_seconds=duration,
+            audio_path=audio_path,
+            file_format=actual_format,
+            title=job.payload.title,
+        )
+
+        response = build_generation_response(
+            generation_id=generation.id,
+            project_id=generation.project_id,
+            user_id=generation.user_id,
+            project_name=(project.name if project is not None else STANDALONE_PROJECT_NAME),
+            text=job.payload.text,
+            voice_id=job.payload.voice_id,
+            audio_path=generation.audio_path,
+            audio_url=audio_url,
+            duration_seconds=generation.duration_seconds,
+            created_at=generation.created_at,
+            file_format=generation.file_format,
+            title=job.payload.title,
+            folder_id=job.payload.folder_id,
+        )
+        _update_generation_job(job_id, status="completed", progress=100, stage="Complete", result=response)
+    except RuntimeError as e:
+        message = str(e)
+        if "cancel" in message.lower():
+            _update_generation_job(job_id, status="cancelled", progress=0, stage="Cancelled", error=message)
+        else:
+            _update_generation_job(job_id, status="failed", progress=0, stage="Failed", error=message)
+    except Exception as e:
+        logger.exception("Generation job failed")
+        _update_generation_job(job_id, status="failed", progress=0, stage="Failed", error=str(e))
+    finally:
+        db.close()
 
 
 def project_belongs_to_user(project: Project | None, user_id: str) -> bool:
@@ -294,6 +443,10 @@ class GenerationResponse(BaseModel):
     duration_seconds: float
     created_at: datetime
     updated_at: datetime
+
+
+class GenerationJobRequest(GenerationRequest):
+    pass
 
 class VoiceResponse(BaseModel):
     id: str
@@ -869,6 +1022,49 @@ def get_available_voices():
 
 # ==================== STANDALONE GENERATION ENDPOINT ====================
 
+@router.post("/generate/jobs/standalone", response_model=GenerationJobStartResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_generate_audio_standalone_job(
+    payload: GenerationJobRequest,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    standalone_project = ProjectService.get_or_create_standalone_project(db, current_user)
+    job_id = str(uuid.uuid4())
+    job = GenerationJobState(
+        job_id=job_id,
+        user_id=current_user,
+        project_id=str(standalone_project.id),
+        payload=payload,
+    )
+    with generation_jobs_lock:
+        generation_jobs[job_id] = job
+    Thread(target=_run_generation_job, args=(job_id,), daemon=True).start()
+    return GenerationJobStartResponse(job_id=job_id, status=job.status, progress=job.progress, stage=job.stage)
+
+
+@router.get("/generate/jobs/{job_id}", response_model=GenerationJobResponse)
+def get_generate_audio_job(
+    job_id: str,
+    current_user: str = Depends(get_current_user),
+):
+    job = _get_generation_job(job_id)
+    if str(job.user_id) != str(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    return _serialize_generation_job(job)
+
+
+@router.post("/generate/jobs/{job_id}/cancel", response_model=GenerationJobResponse)
+def cancel_generate_audio_job(
+    job_id: str,
+    current_user: str = Depends(get_current_user),
+):
+    job = _get_generation_job(job_id)
+    if str(job.user_id) != str(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    job.cancel_event.set()
+    _update_generation_job(job_id, status="cancelling", stage="Cancelling")
+    return _serialize_generation_job(job)
+
 @router.post("/generate/standalone", response_model=GenerationResponse, status_code=status.HTTP_201_CREATED)
 def generate_audio_standalone(
     payload: GenerationRequest,
@@ -945,6 +1141,29 @@ def generate_audio_standalone(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 # ==================== PROJECT GENERATION ENDPOINT ====================
+
+@router.post("/{project_id}/generate/jobs", response_model=GenerationJobStartResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_generate_audio_job(
+    project_id: str,
+    payload: GenerationJobRequest,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    project = ProjectService.get_project(db, project_id, current_user)
+    if not project_belongs_to_user(project, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    job_id = str(uuid.uuid4())
+    job = GenerationJobState(
+        job_id=job_id,
+        user_id=current_user,
+        project_id=project_id,
+        payload=payload,
+    )
+    with generation_jobs_lock:
+        generation_jobs[job_id] = job
+    Thread(target=_run_generation_job, args=(job_id,), daemon=True).start()
+    return GenerationJobStartResponse(job_id=job_id, status=job.status, progress=job.progress, stage=job.stage)
 
 @router.post("/{project_id}/generate", response_model=GenerationResponse, status_code=status.HTTP_201_CREATED)
 def generate_audio(

@@ -1,4 +1,11 @@
-import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
   Download,
@@ -68,6 +75,9 @@ interface AudioLibraryProps {
   searchPlaceholder?: string;
   onDelete?: (item: AudioLibraryItem) => Promise<void>;
   onUseText?: (item: AudioLibraryItem) => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onReachEnd?: () => void;
 }
 
 export function AudioLibrary({
@@ -82,6 +92,9 @@ export function AudioLibrary({
   searchPlaceholder,
   onDelete,
   onUseText,
+  hasMore = false,
+  isLoadingMore = false,
+  onReachEnd,
 }: AudioLibraryProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -96,6 +109,7 @@ export function AudioLibrary({
   const [searchQuery, setSearchQuery] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const listViewportRef = useRef<HTMLDivElement | null>(null);
 
   const voiceMap = useMemo(
     () => new Map(voices.map((voice) => [voice.id, voice.name])),
@@ -120,18 +134,6 @@ export function AudioLibrary({
         .includes(query);
     });
   }, [items, searchQuery, voiceMap]);
-
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-      }
-    };
-  }, []);
 
   const stopCurrentAudio = () => {
     if (audioRef.current) {
@@ -257,6 +259,26 @@ export function AudioLibrary({
     }
   };
 
+  const handleListScroll = useCallback(() => {
+    const viewport = listViewportRef.current;
+    if (
+      !viewport ||
+      !onReachEnd ||
+      !hasMore ||
+      isLoading ||
+      isLoadingMore
+    ) {
+      return;
+    }
+
+    const isNearBottom =
+      viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 120;
+
+    if (isNearBottom) {
+      onReachEnd();
+    }
+  }, [hasMore, isLoading, isLoadingMore, onReachEnd]);
+
   return (
     <Card className="border-border/50 shadow-sm">
       <CardHeader className="pb-3">
@@ -303,8 +325,12 @@ export function AudioLibrary({
             </p>
           </div>
         ) : (
-          <ScrollArea className="h-[360px] pr-3">
-            <div className="space-y-3">
+          <div
+            ref={listViewportRef}
+            className="h-[360px] overflow-auto pr-3"
+            onScroll={handleListScroll}
+          >
+            <div className="space-y-3 pb-3">
               {filteredItems.map((item) => {
                 const previewText = item.text_prompt || item.text;
                 const isPlaying = playingId === item.id;
@@ -416,8 +442,21 @@ export function AudioLibrary({
                   </div>
                 );
               })}
+
+              {isLoadingMore && (
+                <div className="flex items-center justify-center py-4 text-sm text-muted-foreground">
+                  <Loader className="mr-2 h-4 w-4 animate-spin" />
+                  Loading more audio...
+                </div>
+              )}
+
+              {!hasMore && filteredItems.length > 0 && onReachEnd && (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  You have reached the end of this list.
+                </p>
+              )}
             </div>
-          </ScrollArea>
+          </div>
         )}
       </CardContent>
 

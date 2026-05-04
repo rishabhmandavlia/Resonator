@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   CheckSquare,
@@ -16,7 +23,12 @@ import {
   X,
 } from "lucide-react";
 
-import { apiClient, type StoredAudioFile } from "../services/api";
+import {
+  apiClient,
+  type ProjectSummary,
+  type StoredAudioFile,
+  type VoiceOption,
+} from "../services/api";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -49,6 +61,13 @@ import { StatusToast } from "./ui/status-toast";
 import { cn } from "./ui/utils";
 
 const DEFAULT_SORT = "date-desc";
+const REMOTE_STORAGE_BATCH_SIZE = 20;
+const REMOTE_FORMAT_OPTIONS = ["ALL", "MP3", "OGG", "WAV"];
+const DATE_PRESETS = [
+  { id: "today", label: "Today" },
+  { id: "7d", label: "Last 7 days" },
+  { id: "30d", label: "Last 30 days" },
+];
 
 type SortValue =
   | "name-asc"
@@ -179,13 +198,6 @@ function getProjectLabel(file: StoredAudioFile): string {
   return projectName || "Account library";
 }
 
-function getSearchableText(file: StoredAudioFile): string {
-  return [getPromptLabel(file), getProjectLabel(file), file.format]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-}
-
 function buildDownloadName(file: StoredAudioFile): string {
   const extension =
     normalizeTextValue(file.format).replace(/^\./, "") ||
@@ -205,12 +217,27 @@ export function RemoteStorage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const pendingUndoRef = useRef<PendingUndoState | null>(null);
+  const storageViewportRef = useRef<HTMLDivElement | null>(null);
+  const requestVersionRef = useRef(0);
+  const requestInFlightRef = useRef(false);
+  const loadedCountRef = useRef(0);
 
   const [files, setFiles] = useState<StoredAudioFile[]>([]);
   const [quotaBytes, setQuotaBytes] = useState(0);
+  const [usedBytes, setUsedBytes] = useState(0);
+  const [fileCount, setFileCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [voiceId, setVoiceId] = useState<string | null>(null);
+  const [dateFrom, setDateFrom] = useState<string | null>(null);
+  const [dateTo, setDateTo] = useState<string | null>(null);
+  const [minDuration, setMinDuration] = useState<string>("");
+  const [maxDuration, setMaxDuration] = useState<string>("");
   const [formatFilter, setFormatFilter] = useState("ALL");
   const [sortValue, setSortValue] = useState<SortValue>(DEFAULT_SORT);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -224,10 +251,25 @@ export function RemoteStorage() {
   const [detailsFile, setDetailsFile] = useState<StoredAudioFile | null>(null);
   const [isDetailsLoading, setIsDetailsLoading] = useState(false);
   const [pendingUndo, setPendingUndo] = useState<PendingUndoState | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   useEffect(() => {
     pendingUndoRef.current = pendingUndo;
   }, [pendingUndo]);
+
+  useEffect(() => {
+    void Promise.all([apiClient.listProjects(), apiClient.getAvailableVoices()])
+      .then(([loadedProjects, loadedVoices]) => {
+        setProjects(loadedProjects);
+        setVoices(loadedVoices);
+      })
+      .catch(() => {
+        setProjects([]);
+        setVoices([]);
+      });
+  }, []);
 
   const stopCurrentAudio = useCallback(() => {
     if (audioRef.current) {
@@ -243,26 +285,104 @@ export function RemoteStorage() {
     setPlayingId(null);
   }, []);
 
-  const loadStorageFiles = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  const loadStorageFiles = useCallback(async (
+    append = false,
+    requestVersion = requestVersionRef.current,
+  ) => {
+    if (requestInFlightRef.current) {
+      return;
+    }
+
+    requestInFlightRef.current = true;
 
     try {
-      const response = await apiClient.listStoredAudioFiles();
-      setFiles(response.files);
+      if (append) {
+        setIsLoadingMore(true);
+      } else {
+        setIsLoading(true);
+        setError(null);
+      }
+
+      const nextSkip = append ? loadedCountRef.current : 0;
+      const [sortBy, sortOrder] = sortValue.split("-") as [string, string];
+      const response = await apiClient.listStoredAudioFiles({
+        projectId,
+        voiceId,
+        dateFrom,
+        dateTo,
+        minDuration: minDuration ? Number(minDuration) : null,
+        maxDuration: maxDuration ? Number(maxDuration) : null,
+        searchText: deferredSearchQuery.trim() || null,
+        fileFormat: formatFilter,
+        sortBy:
+          sortBy === "date"
+            ? "created_at"
+            : sortBy === "duration"
+              ? "duration_seconds"
+              : sortBy,
+        sortOrder,
+        skip: nextSkip,
+        limit: REMOTE_STORAGE_BATCH_SIZE,
+      });
+
+      if (requestVersion !== requestVersionRef.current) {
+        return;
+      }
+
+      let nextLoadedCount = 0;
+      setFiles((current) => {
+        const nextFiles = append ? mergeFiles(current, response.files) : response.files;
+        nextLoadedCount = nextFiles.length;
+        return nextFiles;
+      });
+      loadedCountRef.current = nextLoadedCount;
       setQuotaBytes(response.quotaBytes);
+      setUsedBytes(response.usedBytes);
+      setFileCount(response.fileCount);
+      setTotalCount(response.totalCount);
+      setHasMore(nextLoadedCount < response.totalCount);
     } catch (err: any) {
       setError(
         err?.detail || err?.message || "Failed to load remote storage files",
       );
+      if (!append) {
+        setFiles([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (requestVersion === requestVersionRef.current) {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+        requestInFlightRef.current = false;
+      }
     }
-  }, []);
+  }, [
+    deferredSearchQuery,
+    dateFrom,
+    dateTo,
+    formatFilter,
+    maxDuration,
+    minDuration,
+    projectId,
+    sortValue,
+    voiceId,
+  ]);
 
   useEffect(() => {
-    void loadStorageFiles();
+    requestVersionRef.current += 1;
+    requestInFlightRef.current = false;
+    loadedCountRef.current = 0;
+    setFiles([]);
+    setFileCount(0);
+    setTotalCount(0);
+    setHasMore(true);
+    setSelectedIds([]);
+    setSelectionMode(false);
+    storageViewportRef.current?.scrollTo({ top: 0 });
 
+    void loadStorageFiles(false, requestVersionRef.current);
+  }, [loadStorageFiles]);
+
+  useEffect(() => {
     return () => {
       stopCurrentAudio();
 
@@ -270,76 +390,7 @@ export function RemoteStorage() {
         window.clearTimeout(pendingUndoRef.current.timerId);
       }
     };
-  }, [loadStorageFiles, stopCurrentAudio]);
-
-  const formatOptions = useMemo(() => {
-    const options = new Set<string>();
-    files.forEach((file) => {
-      if (file.format) {
-        options.add(file.format.toUpperCase());
-      }
-    });
-    return ["ALL", ...Array.from(options).sort()];
-  }, [files]);
-
-  const filteredFiles = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    const normalizedFormat = formatFilter.toUpperCase();
-
-    const filtered = files.filter((file) => {
-      const matchesSearch = !query || getSearchableText(file).includes(query);
-      const matchesFormat =
-        normalizedFormat === "ALL" ||
-        file.format.toUpperCase() === normalizedFormat;
-
-      return matchesSearch && matchesFormat;
-    });
-
-    const sorted = [...filtered];
-    sorted.sort((left, right) => {
-      switch (sortValue) {
-        case "name-asc":
-          return getPromptLabel(left).localeCompare(
-            getPromptLabel(right),
-            undefined,
-            {
-              numeric: true,
-              sensitivity: "base",
-            },
-          );
-        case "name-desc":
-          return getPromptLabel(right).localeCompare(
-            getPromptLabel(left),
-            undefined,
-            {
-              numeric: true,
-              sensitivity: "base",
-            },
-          );
-        case "size-asc":
-          return left.fileSizeBytes - right.fileSizeBytes;
-        case "size-desc":
-          return right.fileSizeBytes - left.fileSizeBytes;
-        case "date-asc":
-          return (
-            new Date(left.uploadedAt).getTime() -
-            new Date(right.uploadedAt).getTime()
-          );
-        case "duration-asc":
-          return left.durationSeconds - right.durationSeconds;
-        case "duration-desc":
-          return right.durationSeconds - left.durationSeconds;
-        case "date-desc":
-        default:
-          return (
-            new Date(right.uploadedAt).getTime() -
-            new Date(left.uploadedAt).getTime()
-          );
-      }
-    });
-
-    return sorted;
-  }, [files, formatFilter, searchQuery, sortValue]);
+  }, [stopCurrentAudio]);
 
   const selectedFileSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedFiles = useMemo(
@@ -350,18 +401,12 @@ export function RemoteStorage() {
     () => selectedFiles.reduce((total, file) => total + file.fileSizeBytes, 0),
     [selectedFiles],
   );
-  const usedBytes = useMemo(
-    () => files.reduce((total, file) => total + file.fileSizeBytes, 0),
-    [files],
-  );
   const usagePercentage = quotaBytes > 0 ? (usedBytes / quotaBytes) * 100 : 0;
   const usageTone = getUsageTone(usagePercentage);
   const allVisibleSelected =
-    filteredFiles.length > 0 &&
-    filteredFiles.every((file) => selectedFileSet.has(file.id));
-  const hasNoFiles = !isLoading && files.length === 0;
-  const hasNoResults =
-    !isLoading && files.length > 0 && filteredFiles.length === 0;
+    files.length > 0 && files.every((file) => selectedFileSet.has(file.id));
+  const hasNoFiles = !isLoading && fileCount === 0;
+  const hasNoResults = !isLoading && fileCount > 0 && totalCount === 0;
 
   const activeChips = useMemo(() => {
     const chips: Array<{ id: string; label: string; onClear: () => void }> = [];
@@ -371,6 +416,44 @@ export function RemoteStorage() {
         id: "search",
         label: `Search: ${searchQuery.trim()}`,
         onClear: () => setSearchQuery(""),
+      });
+    }
+
+    if (projectId) {
+      chips.push({
+        id: "project",
+        label: `Project: ${projects.find((project) => project.id === projectId)?.name || "Selected"}`,
+        onClear: () => setProjectId(null),
+      });
+    }
+
+    if (voiceId) {
+      chips.push({
+        id: "voice",
+        label: `Voice: ${voices.find((voice) => voice.id === voiceId)?.name || voiceId}`,
+        onClear: () => setVoiceId(null),
+      });
+    }
+
+    if (dateFrom || dateTo) {
+      chips.push({
+        id: "date",
+        label: "Date range",
+        onClear: () => {
+          setDateFrom(null);
+          setDateTo(null);
+        },
+      });
+    }
+
+    if (minDuration || maxDuration) {
+      chips.push({
+        id: "duration",
+        label: "Duration range",
+        onClear: () => {
+          setMinDuration("");
+          setMaxDuration("");
+        },
       });
     }
 
@@ -391,7 +474,29 @@ export function RemoteStorage() {
     }
 
     return chips;
-  }, [formatFilter, searchQuery, sortValue]);
+  }, [
+    dateFrom,
+    dateTo,
+    formatFilter,
+    maxDuration,
+    minDuration,
+    projectId,
+    searchQuery,
+    sortValue,
+    voiceId,
+  ]);
+
+  const clearAllFilters = () => {
+    setSearchQuery("");
+    setProjectId(null);
+    setVoiceId(null);
+    setDateFrom(null);
+    setDateTo(null);
+    setMinDuration("");
+    setMaxDuration("");
+    setFormatFilter("ALL");
+    setSortValue(DEFAULT_SORT);
+  };
 
   const handleTogglePlayback = async (file: StoredAudioFile) => {
     const source = file.audioUrl || file.audioPath;
@@ -472,9 +577,15 @@ export function RemoteStorage() {
     [],
   );
 
-  const restoreDeletedFiles = useCallback((targetFiles: StoredAudioFile[]) => {
-    setFiles((current) => mergeFiles(current, targetFiles));
-  }, []);
+  const restoreDeletedFiles = useCallback(() => {
+    requestVersionRef.current += 1;
+    requestInFlightRef.current = false;
+    loadedCountRef.current = 0;
+    setFiles([]);
+    setSelectedIds([]);
+    setHasMore(true);
+    void loadStorageFiles(false, requestVersionRef.current);
+  }, [loadStorageFiles]);
 
   const finalizePendingDelete = useCallback(async () => {
     const currentPending = pendingUndoRef.current;
@@ -489,7 +600,7 @@ export function RemoteStorage() {
     try {
       await commitDeleteRequest(currentPending.files);
     } catch (err: any) {
-      restoreDeletedFiles(currentPending.files);
+      restoreDeletedFiles();
       setError(
         err?.detail || err?.message || "Failed to delete audio file(s).",
       );
@@ -505,7 +616,7 @@ export function RemoteStorage() {
     window.clearTimeout(currentPending.timerId);
     pendingUndoRef.current = null;
     setPendingUndo(null);
-    restoreDeletedFiles(currentPending.files);
+    restoreDeletedFiles();
   };
 
   const stageDelete = useCallback(
@@ -520,6 +631,20 @@ export function RemoteStorage() {
       setFiles((current) => current.filter((file) => !targetIds.has(file.id)));
       setSelectedIds((current) =>
         current.filter((selectedId) => !targetIds.has(selectedId)),
+      );
+      loadedCountRef.current = Math.max(0, loadedCountRef.current - targetFiles.length);
+      setFileCount((current) => Math.max(0, current - targetFiles.length));
+      setTotalCount((current) => {
+        const nextCount = Math.max(0, current - targetFiles.length);
+        setHasMore(loadedCountRef.current < nextCount);
+        return nextCount;
+      });
+      setUsedBytes((current) =>
+        Math.max(
+          0,
+          current -
+            targetFiles.reduce((total, file) => total + file.fileSizeBytes, 0),
+        ),
       );
       stopCurrentAudio();
 
@@ -578,7 +703,7 @@ export function RemoteStorage() {
   };
 
   const handleSelectAllVisible = () => {
-    const visibleIds = filteredFiles.map((file) => file.id);
+    const visibleIds = files.map((file) => file.id);
 
     setSelectedIds((current) => {
       if (allVisibleSelected) {
@@ -606,6 +731,26 @@ export function RemoteStorage() {
     setError(null);
   }, []);
 
+  const handleStorageScroll = useCallback(() => {
+    const viewport = storageViewportRef.current;
+    if (
+      !viewport ||
+      !hasMore ||
+      isLoading ||
+      isLoadingMore ||
+      requestInFlightRef.current
+    ) {
+      return;
+    }
+
+    const isNearBottom =
+      viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 160;
+
+    if (isNearBottom) {
+      void loadStorageFiles(true, requestVersionRef.current);
+    }
+  }, [hasMore, isLoading, isLoadingMore, loadStorageFiles]);
+
   return (
     <div className="relative h-full p-6">
       {error && (
@@ -617,11 +762,11 @@ export function RemoteStorage() {
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-                Remote Storage
+                Audio Library
               </h1>
               <p className="mt-2 max-w-3xl text-lg text-muted-foreground">
-                Review generated audio files, monitor quota usage, and clean up
-                saved clips without leaving the workspace.
+                Review generated audio files, manage saved clips, and clean up
+                your library without leaving the workspace.
               </p>
             </div>
 
@@ -630,7 +775,7 @@ export function RemoteStorage() {
                 variant={selectionMode ? "secondary" : "outline"}
                 className="h-11 gap-2 px-6"
                 onClick={handleToggleSelectionMode}
-                disabled={isLoading || files.length === 0}
+                disabled={isLoading || fileCount === 0}
               >
                 <CheckSquare className="h-5 w-5" />
                 {selectionMode ? "Exit Selection" : "Select"}
@@ -706,7 +851,7 @@ export function RemoteStorage() {
                         Audio Files
                       </div>
                       <p className="mt-2 text-2xl font-semibold text-foreground">
-                        {files.length}
+                        {fileCount}
                       </p>
                     </div>
 
@@ -732,69 +877,129 @@ export function RemoteStorage() {
             <div className="flex min-h-0 flex-col gap-6">
               <Card className="border-border/50 shadow-sm">
                 <CardContent className="space-y-5 p-6">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="flex flex-1 flex-col gap-4 md:flex-row md:items-center">
-                      <div className="relative flex-1">
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
+                    <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+                      <div className="relative lg:col-span-2 xl:col-span-1">
                         <Input
                           value={searchQuery}
-                          onChange={(event) =>
-                            setSearchQuery(event.target.value)
-                          }
+                          onChange={(event) => setSearchQuery(event.target.value)}
                           placeholder="Search prompts, projects, or formats"
                           className="pl-10"
                         />
                       </div>
 
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <Select
-                          value={sortValue}
-                          onValueChange={(value: SortValue) =>
-                            setSortValue(value)
-                          }
-                        >
-                          <SelectTrigger className="w-full sm:w-[190px]">
-                            <SelectValue placeholder="Sort files" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {Object.entries(SORT_LABELS).map(
-                              ([value, label]) => (
-                                <SelectItem key={value} value={value}>
-                                  {label}
-                                </SelectItem>
-                              ),
-                            )}
-                          </SelectContent>
-                        </Select>
+                      <Select value={projectId || "ALL"} onValueChange={(value) => setProjectId(value === "ALL" ? null : value)}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Project" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ALL">All projects</SelectItem>
+                          {projects.map((project) => (
+                            <SelectItem key={project.id} value={project.id}>
+                              {project.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
 
-                        <Select
-                          value={formatFilter}
-                          onValueChange={setFormatFilter}
-                        >
-                          <SelectTrigger className="w-full sm:w-[150px]">
-                            <SelectValue placeholder="Format" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {formatOptions.map((option) => (
-                              <SelectItem key={option} value={option}>
-                                {option === "ALL" ? "All formats" : option}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                      <Select value={voiceId || "ALL"} onValueChange={(value) => setVoiceId(value === "ALL" ? null : value)}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Voice" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ALL">All voices</SelectItem>
+                          {voices.map((voice) => (
+                            <SelectItem key={voice.id} value={voice.id}>
+                              {voice.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      <div className="grid grid-cols-2 gap-3 lg:col-span-2 xl:col-span-1">
+                        <Input type="date" value={dateFrom || ""} onChange={(event) => setDateFrom(event.target.value || null)} />
+                        <Input type="date" value={dateTo || ""} onChange={(event) => setDateTo(event.target.value || null)} />
                       </div>
+
+                      <div className="grid grid-cols-2 gap-3 lg:col-span-2 xl:col-span-1">
+                        <Input type="number" min="0" step="0.1" value={minDuration} onChange={(event) => setMinDuration(event.target.value)} placeholder="Min duration (s)" />
+                        <Input type="number" min="0" step="0.1" value={maxDuration} onChange={(event) => setMaxDuration(event.target.value)} placeholder="Max duration (s)" />
+                      </div>
+
+                      <Select value={sortValue} onValueChange={(value: SortValue) => setSortValue(value)}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Sort files" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.entries(SORT_LABELS).map(([value, label]) => (
+                            <SelectItem key={value} value={value}>
+                              {label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      <Select value={formatFilter} onValueChange={setFormatFilter}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Format" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {REMOTE_FORMAT_OPTIONS.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option === "ALL" ? "All formats" : option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     {selectionMode && (
-                      <Button
-                        variant="outline"
-                        className="gap-2"
-                        onClick={handleSelectAllVisible}
-                        disabled={filteredFiles.length === 0}
-                      >
+                      <Button variant="outline" className="gap-2" onClick={handleSelectAllVisible} disabled={files.length === 0}>
                         <CheckSquare className="h-4 w-4" />
                         {allVisibleSelected ? "Deselect All" : "Select All"}
                       </Button>
                     )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    {DATE_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.id}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const today = new Date();
+                          const end = new Date(today);
+                          const start = new Date(today);
+                          if (preset.id === "today") {
+                            setDateFrom(today.toISOString().slice(0, 10));
+                            setDateTo(today.toISOString().slice(0, 10));
+                            return;
+                          }
+                          if (preset.id === "7d") {
+                            start.setDate(start.getDate() - 6);
+                          }
+                          if (preset.id === "30d") {
+                            start.setDate(start.getDate() - 29);
+                          }
+                          setDateFrom(start.toISOString().slice(0, 10));
+                          setDateTo(end.toISOString().slice(0, 10));
+                        }}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearAllFilters}
+                      disabled={activeChips.length === 0}
+                    >
+                      Clear all filters
+                    </Button>
                   </div>
 
                   {activeChips.length > 0 && (
@@ -826,18 +1031,18 @@ export function RemoteStorage() {
                   {isLoading ? (
                     <div className="flex h-full min-h-[280px] items-center justify-center gap-3 p-6 text-sm text-muted-foreground">
                       <Loader2 className="h-5 w-5 animate-spin" />
-                      Loading remote storage files...
+                          Loading audio library...
                     </div>
                   ) : hasNoFiles ? (
                     <div className="p-10">
                       <div className="rounded-3xl border border-dashed border-border/70 bg-secondary/10 px-6 py-14 text-center">
                         <Waves className="mx-auto h-12 w-12 text-muted-foreground/60" />
-                        <h3 className="mt-4 text-xl font-semibold text-foreground">
-                          Your generated library is empty
+                          <h3 className="mt-4 text-xl font-semibold text-foreground">
+                          Your audio library is empty
                         </h3>
                         <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
                           Generate a clip in the studio to start building your
-                          managed storage library.
+                          library.
                         </p>
                       </div>
                     </div>
@@ -845,7 +1050,7 @@ export function RemoteStorage() {
                     <div className="p-10">
                       <div className="rounded-3xl border border-dashed border-border/70 bg-secondary/10 px-6 py-14 text-center">
                         <Search className="mx-auto h-12 w-12 text-muted-foreground/60" />
-                        <h3 className="mt-4 text-xl font-semibold text-foreground">
+                          <h3 className="mt-4 text-xl font-semibold text-foreground">
                           No files match the current filters
                         </h3>
                         <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
@@ -875,14 +1080,18 @@ export function RemoteStorage() {
                       </div>
                     </div>
                   ) : (
-                    <ScrollArea className="h-full">
+                    <div
+                      ref={storageViewportRef}
+                      className="h-full overflow-auto"
+                      onScroll={handleStorageScroll}
+                    >
                       <div
                         className={cn(
                           "grid grid-cols-1 gap-4 p-6 md:grid-cols-2 2xl:grid-cols-3",
                           selectionMode && selectedFiles.length > 0 && "pb-28",
                         )}
                       >
-                        {filteredFiles.map((file) => {
+                        {files.map((file) => {
                           const waveformHeights = buildWaveformHeights(file.id);
                           const isPreviewLoading = loadingPreviewId === file.id;
                           const isPlaying = playingId === file.id;
@@ -1076,8 +1285,21 @@ export function RemoteStorage() {
                             </Card>
                           );
                         })}
+
+                        {isLoadingMore && (
+                          <div className="col-span-full flex items-center justify-center gap-3 py-4 text-sm text-muted-foreground">
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                            Loading more files...
+                          </div>
+                        )}
+
+                        {!hasMore && files.length > 0 && (
+                          <p className="col-span-full py-2 text-center text-xs text-muted-foreground">
+                            You have reached the end of your saved library.
+                          </p>
+                        )}
                       </div>
-                    </ScrollArea>
+                    </div>
                   )}
                 </CardContent>
               </Card>

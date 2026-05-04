@@ -67,13 +67,10 @@ export function validatePassword(
 
   const errors: string[] = [];
   if (!length) errors.push(BASE_RULE_ERROR_MESSAGES.length);
-  if (!uppercase)
-    errors.push(BASE_RULE_ERROR_MESSAGES.uppercase);
-  if (!lowercase)
-    errors.push(BASE_RULE_ERROR_MESSAGES.lowercase);
+  if (!uppercase) errors.push(BASE_RULE_ERROR_MESSAGES.uppercase);
+  if (!lowercase) errors.push(BASE_RULE_ERROR_MESSAGES.lowercase);
   if (!number) errors.push(BASE_RULE_ERROR_MESSAGES.number);
-  if (!special)
-    errors.push(BASE_RULE_ERROR_MESSAGES.special);
+  if (!special) errors.push(BASE_RULE_ERROR_MESSAGES.special);
   if (!noSpaces) errors.push(BASE_RULE_ERROR_MESSAGES.noSpaces);
 
   if (COMMON_PASSWORDS.has(password.toLowerCase())) {
@@ -124,7 +121,7 @@ export function validatePassword(
       lowercase,
       number,
       special,
-        noSpaces,
+      noSpaces,
     },
   };
 }

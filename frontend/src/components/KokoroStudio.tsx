@@ -3,7 +3,7 @@
  * Text-to-speech generation interface with persistent state management
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "./ui/badge";
 import {
   Card,
@@ -26,6 +26,7 @@ import { Sparkles, Wand2, RefreshCw, AlertCircle, Loader } from "lucide-react";
 import { useAuth } from "../services/auth";
 import {
   apiClient,
+  type GenerationJobResponse,
   type GenerationResponse,
   type ProjectSummary,
   type StoredGeneration,
@@ -35,6 +36,7 @@ import { usePersistentState } from "../hooks/usePersistentState";
 import { AudioLibrary, type AudioLibraryItem } from "./AudioLibrary";
 import { AudioWaveformPlayer } from "./AudioWaveformPlayer";
 import { StatusToast } from "./ui/status-toast";
+import { Progress } from "./ui/progress";
 
 // Storage key prefix for this component
 const STORAGE_PREFIX = "kokoro_studio_";
@@ -87,6 +89,9 @@ export function KokoroStudio({
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isLoadingVoices, setIsLoadingVoices] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [generationStage, setGenerationStage] = useState<string | null>(null);
+  const [generationJobId, setGenerationJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -96,6 +101,7 @@ export function KokoroStudio({
     [],
   );
   const [isLoadingGenerations, setIsLoadingGenerations] = useState(false);
+  const pollTimerRef = useRef<number | null>(null);
   const clearToast = useCallback(() => {
     setError(null);
     setSuccess(null);
@@ -136,6 +142,14 @@ export function KokoroStudio({
       setSavedGenerations([]);
     }
   }, [selectedProject]);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        window.clearTimeout(pollTimerRef.current);
+      }
+    };
+  }, []);
 
   // Load saved project audio when project changes
   useEffect(() => {
@@ -254,58 +268,107 @@ export function KokoroStudio({
     }
 
     setIsGenerating(true);
+    setGenerationProgress(0);
+    setGenerationStage("Starting generation");
     setError(null);
     setSuccess(null);
 
     try {
-      // If project is selected, save to project. Otherwise, generate standalone.
-      if (selectedProject && selectedProject !== STANDALONE_PROJECT_ID) {
-        const generation = await apiClient.generateAudio(
-          selectedProject,
-          text,
-          voice,
-          speed,
-          pitch,
-          sampleRate,
-          audioFormat,
-          undefined,
-          `${voice} - ${text.substring(0, 50)}`,
-        );
+      const title = `${voice} - ${text.substring(0, 50)}`;
+      const projectToUse =
+        selectedProject && selectedProject !== STANDALONE_PROJECT_ID
+          ? selectedProject
+          : STANDALONE_PROJECT_ID;
 
-        setCurrentGeneration(generation);
-        const playableUrl = await apiClient.resolveAudioUrl(
-          generation.audio_url || generation.audio_file_path || "",
-        );
-        setAudioUrl(playableUrl);
-        setSuccess("Audio generated successfully!");
+      const job = await apiClient.startGenerationJob(
+        projectToUse,
+        text,
+        voice,
+        speed,
+        pitch,
+        sampleRate,
+        audioFormat,
+        undefined,
+        title,
+      );
 
-        await loadGenerations();
-      } else {
-        // Standalone mode - generate without project
-        const generation = await apiClient.generateAudio(
-          STANDALONE_PROJECT_ID,
-          text,
-          voice,
-          speed,
-          pitch,
-          sampleRate,
-          audioFormat,
-        );
+      setGenerationJobId(job.job_id);
 
-        setCurrentGeneration(generation);
-        const playableUrl = await apiClient.resolveAudioUrl(
-          generation.audio_url || generation.audio_file_path || "",
-        );
-        setAudioUrl(playableUrl);
-        setSuccess(
-          "Audio generated successfully and saved to generation history!",
-        );
-      }
+      const pollJob = async (): Promise<void> => {
+        const current = await apiClient.getGenerationJob(job.job_id);
+        setGenerationProgress(current.progress);
+        setGenerationStage(current.stage);
+
+        if (current.status === "completed" && current.result) {
+          const generation = current.result;
+          setCurrentGeneration(generation);
+          const playableUrl = await apiClient.resolveAudioUrl(
+            generation.audio_url || generation.audio_file_path || "",
+          );
+          setAudioUrl(playableUrl);
+          setSuccess(
+            projectToUse === STANDALONE_PROJECT_ID
+              ? "Audio generated successfully and saved to generation history!"
+              : "Audio generated successfully!",
+          );
+          if (projectToUse !== STANDALONE_PROJECT_ID) {
+            await loadGenerations();
+          }
+          setIsGenerating(false);
+          setGenerationJobId(null);
+          setGenerationStage("Complete");
+          setGenerationProgress(100);
+          return;
+        }
+
+        if (current.status === "cancelled") {
+          setError("Generation cancelled");
+          setAudioUrl(null);
+          setCurrentGeneration(null);
+          setIsGenerating(false);
+          setGenerationJobId(null);
+          setGenerationStage(null);
+          setGenerationProgress(0);
+          return;
+        }
+
+        if (current.status === "failed") {
+          setError(current.error || "Failed to generate audio");
+          setIsGenerating(false);
+          setGenerationJobId(null);
+          setGenerationStage(null);
+          setGenerationProgress(0);
+          return;
+        }
+
+        pollTimerRef.current = window.setTimeout(() => {
+          void pollJob();
+        }, 1000);
+      };
+
+      await pollJob();
     } catch (err: any) {
       setError(err?.detail || "Failed to generate audio");
       console.error(err);
+    }
+  };
+
+  const handleCancelGeneration = async () => {
+    if (!generationJobId) return;
+    try {
+      await apiClient.cancelGenerationJob(generationJobId);
+      setSuccess("Generation cancelled");
+    } catch (err: any) {
+      setError(err?.detail || "Failed to cancel generation");
     } finally {
+      if (pollTimerRef.current) {
+        window.clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
       setIsGenerating(false);
+      setGenerationJobId(null);
+      setGenerationStage(null);
+      setGenerationProgress(0);
     }
   };
 
@@ -343,8 +406,11 @@ export function KokoroStudio({
     }
 
     try {
-      const fileFormat =
-        (currentGeneration?.file_format || audioFormat || "wav").toLowerCase();
+      const fileFormat = (
+        currentGeneration?.file_format ||
+        audioFormat ||
+        "wav"
+      ).toLowerCase();
       const baseName = (currentGeneration?.title || `${voice}_${Date.now()}`)
         .trim()
         .replace(/[<>:"/\\|?*]+/g, " ")
@@ -575,7 +641,26 @@ export function KokoroStudio({
                             </>
                           )}
                         </Button>
+                        {isGenerating && generationJobId && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-8 text-xs"
+                            onClick={handleCancelGeneration}
+                          >
+                            Cancel
+                          </Button>
+                        )}
                       </div>
+                      {isGenerating && (
+                        <div className="space-y-2 border-t border-border/50 bg-background/80 p-3">
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{generationStage || "Generating audio"}</span>
+                            <span>{generationProgress}%</span>
+                          </div>
+                          <Progress value={generationProgress} />
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
 

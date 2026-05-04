@@ -17,13 +17,15 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_serializer
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
 
 from app.middleware.auth import get_current_user
 from app.services.project_service import ProjectService, STANDALONE_PROJECT_NAME
 from app.services.storage_service import SupabaseStorageService
 from database.database import get_db
-from database.models import Generation
+from database.models import Generation, Project
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,9 @@ class StorageFilesResponse(BaseModel):
     usedBytes: int
     remainingBytes: int
     fileCount: int
+    totalCount: int
+    skip: int
+    limit: int
     files: list[StorageAudioFileResponse]
 
 
@@ -202,6 +207,93 @@ def _list_owned_generations(db: Session, current_user: str) -> list[Generation]:
     )
 
 
+def _build_owned_storage_query(db: Session, current_user: str):
+    user_uuid = uuid.UUID(str(current_user))
+    return (
+        db.query(Generation)
+        .options(joinedload(Generation.project))
+        .filter(
+            Generation.user_id == user_uuid,
+            Generation.audio_path.isnot(None),
+        )
+    )
+
+
+def _apply_storage_filters(
+    query,
+    *,
+    project_id: str | None,
+    voice_id: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    min_duration: float | None,
+    max_duration: float | None,
+    search_text: str | None,
+    file_format: str | None,
+):
+    if project_id:
+        query = query.filter(Generation.project_id == uuid.UUID(str(project_id)))
+
+    if voice_id:
+        query = query.filter(Generation.voice_id == voice_id)
+
+    if date_from is not None:
+        query = query.filter(Generation.created_at >= date_from)
+
+    if date_to is not None:
+        query = query.filter(Generation.created_at <= date_to)
+
+    if min_duration is not None:
+        query = query.filter(Generation.duration_seconds >= min_duration)
+
+    if max_duration is not None:
+        query = query.filter(Generation.duration_seconds <= max_duration)
+
+    if search_text:
+        search_pattern = f"%{search_text.strip()}%"
+        query = query.join(Project, Generation.project_id == Project.id)
+        query = query.filter(
+            or_(
+                Generation.text_prompt.ilike(search_pattern),
+                Generation.title.ilike(search_pattern),
+                Project.name.ilike(search_pattern),
+                Generation.file_format.ilike(search_pattern),
+            )
+        )
+
+    if file_format and file_format.upper() != "ALL":
+        query = query.filter(func.lower(Generation.file_format) == file_format.lower())
+
+    return query
+
+
+def _apply_storage_sorting(query, sort_by: str, sort_order: str):
+    is_desc = sort_order.lower() != "asc"
+
+    if sort_by == "name":
+        sort_column = func.coalesce(Generation.title, Generation.text_prompt)
+    elif sort_by == "duration_seconds":
+        sort_column = Generation.duration_seconds
+    else:
+        sort_column = Generation.created_at
+
+    ordered = sort_column.desc() if is_desc else sort_column.asc()
+    tie_breaker = Generation.created_at.desc()
+    return query.order_by(ordered, tie_breaker)
+
+
+def _parse_storage_date(value: str, *, end_of_day: bool = False) -> datetime:
+    normalized_value = value.strip()
+    if "T" not in normalized_value and " " not in normalized_value:
+        normalized_value = (
+            f"{normalized_value}T23:59:59"
+            if end_of_day
+            else f"{normalized_value}T00:00:00"
+        )
+
+    return datetime.fromisoformat(normalized_value.replace("Z", "+00:00"))
+
+
 @router.get("/proxy")
 def proxy_audio_file(
     path: str = Query(..., description="Supabase storage object path"),
@@ -258,22 +350,95 @@ def proxy_audio_file(
 
 @router.get("/storage/files", response_model=StorageFilesResponse)
 def list_storage_files(
+    project_id: str | None = Query(None, description="Filter by project ID"),
+    voice_id: str | None = Query(None, description="Filter by voice ID"),
+    date_from: str | None = Query(None, description="Filter files from this date (ISO format)"),
+    date_to: str | None = Query(None, description="Filter files until this date (ISO format)"),
+    min_duration: float | None = Query(None, description="Minimum duration in seconds"),
+    max_duration: float | None = Query(None, description="Maximum duration in seconds"),
+    search_text: str | None = Query(None, description="Search prompt, title, project name, or format"),
+    file_format: str | None = Query(None, description="Filter by file format"),
+    sort_by: str = Query("created_at", description="Sort by created_at, duration_seconds, name, or size"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(20, ge=1, le=100, description="Number of records to return"),
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> StorageFilesResponse:
-    generations = _list_owned_generations(db, current_user)
-    files = [
-        _build_storage_file_response(generation)
-        for generation in generations
-        if generation.audio_path
-    ]
-    used_bytes = sum(file.fileSizeBytes for file in files)
+    valid_sort_fields = {"created_at", "duration_seconds", "name", "size"}
+    if sort_by not in valid_sort_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid sort_by. Must be one of: {', '.join(sorted(valid_sort_fields))}",
+        )
+
+    if sort_order.lower() not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sort_order. Must be 'asc' or 'desc'",
+        )
+
+    parsed_date_from = None
+    parsed_date_to = None
+    if date_from:
+        try:
+          parsed_date_from = _parse_storage_date(date_from)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date_from format. Use ISO format or YYYY-MM-DD.",
+            ) from exc
+    if date_to:
+        try:
+            parsed_date_to = _parse_storage_date(date_to, end_of_day=True)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date_to format. Use ISO format or YYYY-MM-DD.",
+            ) from exc
+
+    all_generations = _build_owned_storage_query(db, current_user).all()
+    file_count = len(all_generations)
+    used_bytes = sum(_resolve_file_size_bytes(generation) for generation in all_generations)
+
+    filtered_query = _apply_storage_filters(
+        _build_owned_storage_query(db, current_user),
+        project_id=project_id,
+        voice_id=voice_id,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        search_text=search_text,
+        file_format=file_format,
+    )
+    total_count = filtered_query.count()
+
+    if sort_by == "size":
+        filtered_files = [
+            _build_storage_file_response(generation)
+            for generation in filtered_query.all()
+        ]
+        filtered_files.sort(
+            key=lambda file: (file.fileSizeBytes, file.uploadedAt.isoformat(), file.id),
+            reverse=sort_order.lower() == "desc",
+        )
+        files = filtered_files[skip : skip + limit]
+    else:
+        generations = _apply_storage_sorting(filtered_query, sort_by, sort_order).offset(skip).limit(limit).all()
+        files = [
+            _build_storage_file_response(generation)
+            for generation in generations
+        ]
 
     return StorageFilesResponse(
         quotaBytes=DEFAULT_STORAGE_QUOTA_BYTES,
         usedBytes=used_bytes,
         remainingBytes=max(DEFAULT_STORAGE_QUOTA_BYTES - used_bytes, 0),
-        fileCount=len(files),
+        fileCount=file_count,
+        totalCount=total_count,
+        skip=skip,
+        limit=limit,
         files=files,
     )
 

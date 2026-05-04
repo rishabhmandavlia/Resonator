@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { KokoroStudio } from "./KokoroStudio";
 import { Projects } from "./Projects";
-import { HistoryPage } from "./HistoryPage";
 import { RemoteStorage } from "./RemoteStorage";
 import { SettingsPage } from "./SettingsPage";
 import { Alert, AlertDescription } from "./ui/alert";
@@ -18,9 +17,7 @@ export function Layout() {
         return <KokoroStudio forceStandalone />;
       case "projects":
         return <Projects />;
-      case "history":
-        return <HistoryPage />;
-      case "storage":
+      case "library":
         return <RemoteStorage />;
       case "settings":
         return <SettingsPage />;

@@ -71,8 +71,9 @@ export function AudioWaveformPlayer({
       setIsDecoding(false);
     } catch {
       // Fallback: generate a placeholder waveform
-      const placeholder = Array.from({ length: barCount }, () =>
-        0.15 + Math.random() * 0.7,
+      const placeholder = Array.from(
+        { length: barCount },
+        () => 0.15 + Math.random() * 0.7,
       );
       waveformDataRef.current = placeholder;
       setIsDecoding(false);
@@ -167,10 +168,7 @@ export function AudioWaveformPlayer({
       const entry = entries[0];
       if (!entry) return;
       const width = entry.contentRect.width;
-      const barCount = Math.max(
-        20,
-        Math.floor(width / (BAR_WIDTH + BAR_GAP)),
-      );
+      const barCount = Math.max(20, Math.floor(width / (BAR_WIDTH + BAR_GAP)));
       decodeAudio(audioUrl, barCount);
     });
 

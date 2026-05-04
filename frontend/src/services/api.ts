@@ -47,6 +47,18 @@ export interface GenerationResponse {
   updated_at: string;
 }
 
+export interface GenerationJobStartResponse {
+  job_id: string;
+  status: string;
+  progress: number;
+  stage: string;
+}
+
+export interface GenerationJobResponse extends GenerationJobStartResponse {
+  error?: string | null;
+  result?: GenerationResponse | null;
+}
+
 export interface StoredGeneration extends GenerationResponse {
   project_name?: string | null;
 }
@@ -151,6 +163,9 @@ export interface StoredAudioFilesResponse {
   usedBytes: number;
   remainingBytes: number;
   fileCount: number;
+  totalCount: number;
+  skip: number;
+  limit: number;
   files: StoredAudioFile[];
 }
 
@@ -988,6 +1003,51 @@ class ApiClient {
     return normalizeGenerationResponse(generation);
   }
 
+  async startGenerationJob(
+    projectId: string,
+    text: string,
+    voiceId: string,
+    speed?: number,
+    pitch?: number,
+    sampleRate?: number,
+    audioFormat?: string,
+    folderId?: string,
+    title?: string,
+  ): Promise<GenerationJobStartResponse> {
+    const endpoint =
+      !projectId || projectId === "standalone"
+        ? "/api/projects/generate/jobs/standalone"
+        : `/api/projects/${projectId}/generate/jobs`;
+
+    return this.request<GenerationJobStartResponse>(endpoint, {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        voice_id: voiceId,
+        speed: speed || 1.0,
+        pitch: pitch || 1.0,
+        sample_rate: sampleRate || 22050,
+        audio_format: audioFormat || "wav",
+        folder_id: folderId,
+        title,
+      }),
+    });
+  }
+
+  async getGenerationJob(jobId: string): Promise<GenerationJobResponse> {
+    return this.request<GenerationJobResponse>(
+      `/api/projects/generate/jobs/${jobId}`,
+      { method: "GET" },
+    );
+  }
+
+  async cancelGenerationJob(jobId: string): Promise<GenerationJobResponse> {
+    return this.request<GenerationJobResponse>(
+      `/api/projects/generate/jobs/${jobId}/cancel`,
+      { method: "POST" },
+    );
+  }
+
   /**
    * List saved generations in a project
    */
@@ -1158,9 +1218,53 @@ class ApiClient {
     };
   }
 
-  async listStoredAudioFiles(): Promise<StoredAudioFilesResponse> {
+  async listStoredAudioFiles(params?: {
+    projectId?: string | null;
+    voiceId?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    minDuration?: number | null;
+    maxDuration?: number | null;
+    searchText?: string | null;
+    fileFormat?: string | null;
+    sortBy?: string;
+    sortOrder?: string;
+    skip?: number;
+    limit?: number;
+  }): Promise<StoredAudioFilesResponse> {
+    const queryParams = new URLSearchParams();
+
+    if (params?.projectId) {
+      queryParams.append("project_id", params.projectId);
+    }
+    if (params?.voiceId) {
+      queryParams.append("voice_id", params.voiceId);
+    }
+    if (params?.dateFrom) {
+      queryParams.append("date_from", params.dateFrom);
+    }
+    if (params?.dateTo) {
+      queryParams.append("date_to", params.dateTo);
+    }
+    if (params?.minDuration !== null && params?.minDuration !== undefined) {
+      queryParams.append("min_duration", params.minDuration.toString());
+    }
+    if (params?.maxDuration !== null && params?.maxDuration !== undefined) {
+      queryParams.append("max_duration", params.maxDuration.toString());
+    }
+    if (params?.searchText) {
+      queryParams.append("search_text", params.searchText);
+    }
+    if (params?.fileFormat && params.fileFormat !== "ALL") {
+      queryParams.append("file_format", params.fileFormat);
+    }
+    queryParams.append("sort_by", params?.sortBy || "created_at");
+    queryParams.append("sort_order", params?.sortOrder || "desc");
+    queryParams.append("skip", String(params?.skip || 0));
+    queryParams.append("limit", String(params?.limit || 20));
+
     const response = await this.request<StoredAudioFilesResponse>(
-      "/api/audio/storage/files",
+      `/api/audio/storage/files?${queryParams.toString()}`,
       {
         method: "GET",
       },

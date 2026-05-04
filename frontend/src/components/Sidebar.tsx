@@ -6,7 +6,6 @@ import {
   ChevronsUpDown,
   Database,
   FolderKanban,
-  History,
   KeyRound,
   LogOut,
   Mail,
@@ -299,16 +298,10 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
       description: "Manage TTS projects",
     },
     {
-      id: "history",
-      name: "History",
-      icon: History,
-      description: "Generation history",
-    },
-    {
-      id: "storage",
-      name: "Remote Storage",
+      id: "library",
+      name: "Audio Library",
       icon: Database,
-      description: "Cloud database & files",
+      description: "Generation history & storage",
     },
     {
       id: "settings",

@@ -15,10 +15,7 @@ import {
   type CurrentUserResponse,
   type RegistrationChallengeResponse,
 } from "../services/api";
-import {
-  PasswordValidator,
-  validatePassword,
-} from "./PasswordValidator";
+import { PasswordValidator, validatePassword } from "./PasswordValidator";
 import { StatusToast } from "./ui/status-toast";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
@@ -541,10 +538,7 @@ export function SettingsPage() {
       return;
     }
 
-    if (
-      currentUser.has_email_auth &&
-      !passwordForm.currentPassword.trim()
-    ) {
+    if (currentUser.has_email_auth && !passwordForm.currentPassword.trim()) {
       setNotice({
         tone: "error",
         message: "Current password is required",

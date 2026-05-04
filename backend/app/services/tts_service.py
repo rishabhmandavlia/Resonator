@@ -7,9 +7,10 @@ import logging
 import math
 import os
 import warnings
+from threading import Event
 from io import BytesIO
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 import uuid
 
 import numpy as np
@@ -105,6 +106,20 @@ class TTSService:
     _device = None
     _pipelines = {}
     _ffmpeg_binary: str | None = None
+
+    @staticmethod
+    def _report_progress(
+        progress_callback: Callable[[str, int], None] | None,
+        stage: str,
+        percent: int,
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(stage, percent)
+
+    @staticmethod
+    def _raise_if_cancelled(cancel_event: Event | None) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Generation cancelled")
     
     @staticmethod
     def _get_device():
@@ -315,6 +330,8 @@ class TTSService:
         speed: float = 1.0,
         pitch: float = 1.0,
         project_id: Optional[str] = None,
+        progress_callback: Callable[[str, int], None] | None = None,
+        cancel_event: Event | None = None,
     ) -> Tuple[str, float, str, str]:
         """
         Generate mock audio data for testing when PyTorch is not available.
@@ -325,6 +342,8 @@ class TTSService:
             import struct
             
             audio_id = str(uuid.uuid4())
+            TTSService._report_progress(progress_callback, "Synthesizing audio", 30)
+            TTSService._raise_if_cancelled(cancel_event)
             
             # Calculate duration based on text length and speed
             # Rough estimate: 5 characters per second at normal speed
@@ -353,6 +372,8 @@ class TTSService:
             audio_bytes = buffer.getvalue()
             
             logger.info("Mock audio generated in memory (duration: %.2fs)", duration)
+            TTSService._report_progress(progress_callback, "Encoding audio", 75)
+            TTSService._raise_if_cancelled(cancel_event)
 
             storage_path, audio_url = TTSService._store_generated_audio(
                 audio_bytes,
@@ -361,6 +382,7 @@ class TTSService:
                 voice_id=voice_id,
                 audio_format="wav",
             )
+            TTSService._report_progress(progress_callback, "Uploading audio", 95)
             return storage_path, duration, audio_url, "wav"
             
         except Exception as e:
@@ -376,6 +398,8 @@ class TTSService:
         sample_rate: int = 22050,
         audio_format: str = "wav",
         project_id: Optional[str] = None,
+        progress_callback: Callable[[str, int], None] | None = None,
+        cancel_event: Event | None = None,
     ) -> Tuple[str, float, str, str]:
         """
         Generate audio from text using Kokoro TTS.
@@ -408,7 +432,9 @@ class TTSService:
         
         try:
             logger.info(f"Generating audio: text_len={len(text)}, voice={voice_id}, speed={speed}, pitch={pitch}")
+            TTSService._report_progress(progress_callback, "Loading model", 10)
             model = TTSService._load_model()
+            TTSService._raise_if_cancelled(cancel_event)
 
             if not voice_id:
                 raise ValueError("Voice ID cannot be empty")
@@ -416,6 +442,7 @@ class TTSService:
             voice_path = TTSService._get_voice_path(voice_id)
             language_code = voice_id[0].lower()
             pipeline = TTSService._load_pipeline(language_code)
+            TTSService._report_progress(progress_callback, "Synthesizing audio", 25)
 
             audio_chunks = []
             with torch.no_grad():
@@ -434,6 +461,7 @@ class TTSService:
                         continue
 
                     audio_chunks.append(chunk)
+                    TTSService._raise_if_cancelled(cancel_event)
 
             if not audio_chunks:
                 raise RuntimeError("Kokoro did not return any audio")
@@ -441,6 +469,7 @@ class TTSService:
             waveform = torch.cat(audio_chunks)
 
             if abs(pitch - 1.0) > 1e-6:
+                TTSService._report_progress(progress_callback, "Processing audio", 45)
                 waveform = TTSService._apply_pitch_shift(waveform, pitch)
 
             waveform = waveform.clamp(-1.0, 1.0)
@@ -448,6 +477,7 @@ class TTSService:
             # Handle sample rate conversion
             if sample_rate != AUDIO_SAMPLE_RATE:
                 if TORCHAUDIO_AVAILABLE:
+                    TTSService._report_progress(progress_callback, "Processing audio", 55)
                     waveform = torchaudio.functional.resample(
                         waveform.unsqueeze(0),
                         orig_freq=AUDIO_SAMPLE_RATE,
@@ -458,14 +488,17 @@ class TTSService:
 
             audio_id = str(uuid.uuid4())
             requested_format = audio_format.lower()
+            TTSService._report_progress(progress_callback, "Encoding audio", 70)
             wav_bytes = TTSService._build_wav_bytes(waveform, sample_rate)
             audio_bytes, resolved_audio_format = TTSService._convert_audio_format(
                 wav_bytes,
                 requested_format,
             )
+            TTSService._raise_if_cancelled(cancel_event)
 
             duration = waveform.numel() / sample_rate
 
+            TTSService._report_progress(progress_callback, "Uploading audio", 90)
             storage_path, audio_url = TTSService._store_generated_audio(
                 audio_bytes,
                 audio_id=audio_id,
@@ -475,6 +508,7 @@ class TTSService:
             )
             
             logger.info(f"Audio generated successfully: {storage_path} (duration: {duration:.2f}s)")
+            TTSService._report_progress(progress_callback, "Complete", 100)
             
             return storage_path, duration, audio_url, resolved_audio_format
             

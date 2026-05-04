@@ -16,6 +16,7 @@ import {
   Clock,
   Edit2,
   FolderKanban,
+  FolderOpen,
   Maximize2,
   Plus,
   Search,
@@ -529,45 +530,50 @@ export function Projects() {
                         className="group cursor-pointer transition-all hover:border-primary/50"
                       >
                         <CardContent className="space-y-6 p-6">
-                          <div className="flex items-start justify-between">
+                          <div className="flex items-start gap-4">
                             <button
                               type="button"
-                              className={`flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md ${getColorForProject(index)}`}
+                              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-border/70 bg-gradient-to-br from-slate-50 to-slate-100 text-slate-700 shadow-sm transition-transform hover:-translate-y-0.5 hover:shadow-md"
                               onClick={() => setSelectedProject(project)}
                               title="Open project"
                             >
-                              <FolderKanban className="h-6 w-6" />
+                              <FolderOpen className="h-6 w-6 shrink-0 stroke-[2.1]" />
                             </button>
 
                             <button
                               type="button"
                               onClick={() => setSelectedProject(project)}
-                              className="text-left"
+                              className="min-w-0 flex-1 text-left"
                             >
-                              <h3
-                                className="line-clamp-2 text-lg font-semibold transition-colors hover:text-primary"
-                                title={project.name}
-                              >
-                                {project.name}
-                              </h3>
+                              <div className="flex min-w-0 items-start justify-between gap-3">
+                                <h3
+                                  className="line-clamp-2 text-lg font-semibold leading-snug transition-colors hover:text-primary"
+                                  title={project.name}
+                                >
+                                  {project.name}
+                                </h3>
+                              </div>
+
                               {project.description && (
-                                <p className="mt-1 line-clamp-2 text-sm text-gray-600">
+                                <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">
                                   {project.description}
                                 </p>
                               )}
-                              <div className="mt-2 flex items-center gap-2">
+
+                              <div className="mt-3 flex flex-wrap items-center gap-2">
                                 <Badge
                                   variant="secondary"
-                                  className="bg-secondary/50 text-xs font-normal"
+                                  className="bg-secondary/60 text-xs font-normal"
                                 >
                                   Workspace Ready
                                 </Badge>
                                 {!isOwned && (
-                                  <Badge variant="outline">Shared</Badge>
+                                  <Badge variant="outline" className="text-xs">
+                                    Shared
+                                  </Badge>
                                 )}
                               </div>
                             </button>
-
                           </div>
 
                           <div className="flex items-center justify-between border-t border-border/50 pt-4">
