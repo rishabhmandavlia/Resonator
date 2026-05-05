@@ -507,10 +507,6 @@ export function KokoroStudio({
               </p>
             </div>
           </div>
-          <Badge className="bg-green-50 text-green-800 border-green-200 px-3 py-1 text-xs shrink-0">
-            <div className="w-2 h-2 bg-green-600 rounded-full mr-2 animate-pulse" />
-            {user ? "Ready" : "Offline"}
-          </Badge>
         </div>
       </div>
 

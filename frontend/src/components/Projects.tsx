@@ -561,12 +561,6 @@ export function Projects() {
                               )}
 
                               <div className="mt-3 flex flex-wrap items-center gap-2">
-                                <Badge
-                                  variant="secondary"
-                                  className="bg-secondary/60 text-xs font-normal"
-                                >
-                                  Workspace Ready
-                                </Badge>
                                 {!isOwned && (
                                   <Badge variant="outline" className="text-xs">
                                     Shared
