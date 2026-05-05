@@ -314,7 +314,6 @@ export function RemoteStorage() {
   const [sortValue, setSortValue] = useState<SortValue>(DEFAULT_SORT);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
-  const [isStorageExpanded, setIsStorageExpanded] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loadingPreviewId, setLoadingPreviewId] = useState<string | null>(null);
@@ -525,6 +524,7 @@ export function RemoteStorage() {
     () => selectedFiles.reduce((total, file) => total + file.fileSizeBytes, 0),
     [selectedFiles],
   );
+  const remainingBytes = Math.max(quotaBytes - usedBytes, 0);
   const usagePercentage = quotaBytes > 0 ? (usedBytes / quotaBytes) * 100 : 0;
   const usageTone = getUsageTone(usagePercentage);
   const allVisibleSelected =
@@ -1616,30 +1616,28 @@ export function RemoteStorage() {
 
                 <Card className="border-border/50 shadow-sm">
                   <CardHeader className="pb-3">
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between text-left"
-                      onClick={() =>
-                        setIsStorageExpanded((current) => !current)
-                      }
-                    >
+                    <div className="flex items-start justify-between gap-3">
                       <div>
                         <CardTitle className="text-base font-semibold">
                           Storage
                         </CardTitle>
                         <CardDescription>
-                          Usage and library totals
+                          {isSummaryLoading
+                            ? "Refreshing usage and library totals"
+                            : `${formatBytes(remainingBytes)} left of ${formatBytes(quotaBytes)}`}
                         </CardDescription>
                       </div>
-                      {isStorageExpanded ? (
-                        <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                      {isSummaryLoading ? (
+                        <Skeleton className="h-8 w-24 rounded-full" />
                       ) : (
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        <div className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          {formatBytes(remainingBytes)} left
+                        </div>
                       )}
-                    </button>
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-0">
-                    <div className="rounded-2xl border border-border/60 bg-white px-4 py-3 shadow-sm">
+                    <div className="rounded-2xl border border-border/60 bg-[linear-gradient(180deg,rgba(236,253,245,0.95),rgba(255,255,255,1))] px-4 py-4 shadow-sm">
                       <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         <Database className="h-4 w-4 text-emerald-500" />
                         Used space
@@ -1675,11 +1673,29 @@ export function RemoteStorage() {
                               }}
                             />
                           </div>
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <div className="rounded-xl border border-border/60 bg-white/90 px-3 py-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                Available space
+                              </p>
+                              <p className="mt-2 text-lg font-semibold text-foreground">
+                                {formatBytes(remainingBytes)}
+                              </p>
+                            </div>
+                            <div className="rounded-xl border border-border/60 bg-white/90 px-3 py-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                Total quota
+                              </p>
+                              <p className="mt-2 text-lg font-semibold text-foreground">
+                                {formatBytes(quotaBytes)}
+                              </p>
+                            </div>
+                          </div>
                         </>
                       )}
                     </div>
 
-                    <div className="grid gap-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <div className="rounded-2xl border border-border/60 bg-white px-4 py-3 shadow-sm">
                         <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                           <FileAudio className="h-4 w-4 text-blue-500" />
@@ -1706,14 +1722,6 @@ export function RemoteStorage() {
                         </p>
                       </div>
                     </div>
-
-                    {isStorageExpanded && (
-                      <div className="rounded-2xl border border-dashed border-border/70 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
-                        {isSummaryLoading
-                          ? "Refreshing storage usage..."
-                          : `${formatBytes(quotaBytes)} total quota · ${formatBytes(Math.max(quotaBytes - usedBytes, 0))} left`}
-                      </div>
-                    )}
                   </CardContent>
                 </Card>
               </div>

@@ -106,6 +106,7 @@ class TTSService:
     _device = None
     _pipelines = {}
     _ffmpeg_binary: str | None = None
+    _hidden_voice_prefixes = {"ef", "em", "jf", "jm"}
 
     @staticmethod
     def _report_progress(
@@ -530,6 +531,9 @@ class TTSService:
             if VOICES_DIR.exists():
                 for voice_file in VOICES_DIR.glob("*.pt"):
                     voice_id = voice_file.stem
+
+                    if voice_id[:2].lower() in TTSService._hidden_voice_prefixes:
+                        continue
                     
                     # Extract language and gender from voice_id
                     # Format: {language_code}{gender_char}_{name}

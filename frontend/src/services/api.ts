@@ -4,6 +4,11 @@
  */
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const HIDDEN_VOICE_PREFIXES = new Set(["ef", "em", "jf", "jm"]);
+
+function isHiddenVoice(voiceId: string): boolean {
+  return HIDDEN_VOICE_PREFIXES.has(voiceId.slice(0, 2).toLowerCase());
+}
 
 export interface ApiError {
   detail?: string;
@@ -978,9 +983,14 @@ class ApiClient {
    * Get list of available Kokoro voices
    */
   async getAvailableVoices(): Promise<VoiceOption[]> {
-    return this.request(`/api/projects/voices/available`, {
-      method: "GET",
-    });
+    const voices = await this.request<VoiceOption[]>(
+      `/api/projects/voices/available`,
+      {
+        method: "GET",
+      },
+    );
+
+    return voices.filter((voice) => !isHiddenVoice(voice.id));
   }
 
   /**
@@ -1061,7 +1071,7 @@ class ApiClient {
       ...response,
       result: response.result
         ? normalizeGenerationResponse(response.result)
-        : response.result ?? null,
+        : (response.result ?? null),
     };
   }
 
