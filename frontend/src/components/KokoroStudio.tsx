@@ -533,9 +533,7 @@ export function KokoroStudio({
             <div className="flex items-center justify-center h-96">
               <div className="text-center space-y-2">
                 <Loader className="w-8 h-8 animate-spin mx-auto text-primary" />
-                <p className="text-sm text-muted-foreground">
-                  Loading projects...
-                </p>
+                <p className="text-sm text-muted-foreground">Loading...</p>
               </div>
             </div>
           ) : (
@@ -547,7 +545,7 @@ export function KokoroStudio({
                     <AlertCircle className="w-12 h-12 text-red-500 mx-auto" />
                     <div>
                       <h3 className="font-semibold text-red-900 mb-2">
-                        Error Loading Projects
+                        Error Loading
                       </h3>
                       <p className="text-sm text-red-700">{error}</p>
                     </div>
