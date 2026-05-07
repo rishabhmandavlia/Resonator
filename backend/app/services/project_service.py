@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from datetime import datetime
@@ -56,6 +56,40 @@ class ProjectService:
                 normalized_path,
                 exc,
             )
+
+    @staticmethod
+    def touch_project_activity(
+        db: Session,
+        project_id: str | uuid.UUID | None,
+        *,
+        activity_at: datetime | None = None,
+    ) -> None:
+        project_uuid = _as_uuid(project_id)
+        if project_uuid is None:
+            return
+
+        timestamp = activity_at or datetime.utcnow()
+        analytics = (
+            db.query(ProjectAnalytics)
+            .filter(ProjectAnalytics.project_id == project_uuid)
+            .first()
+        )
+
+        if analytics is None:
+            analytics = ProjectAnalytics(
+                id=uuid.uuid4(),
+                project_id=project_uuid,
+                total_generations=0,
+                total_duration_seconds=0.0,
+                total_characters=0,
+                last_modified=timestamp,
+            )
+            db.add(analytics)
+            db.flush()
+            return
+
+        analytics.last_modified = timestamp
+        db.flush()
     
     # ==================== PROJECT OPERATIONS ====================
     
@@ -154,7 +188,12 @@ class ProjectService:
         try:
             project_uuid = _as_uuid(project_id)
             user_uuid = _as_uuid(user_id)
-            project = db.query(Project).filter(Project.id == project_uuid).first()
+            project = (
+                db.query(Project)
+                .options(joinedload(Project.analytics))
+                .filter(Project.id == project_uuid)
+                .first()
+            )
             if not project:
                 return None
             
@@ -183,6 +222,7 @@ class ProjectService:
             # Own projects
             owned = (
                 db.query(Project)
+                .options(joinedload(Project.analytics))
                 .filter(
                     Project.user_id == user_uuid,
                     Project.is_system.is_(False),
@@ -197,6 +237,7 @@ class ProjectService:
             shared_ids = [s[0] for s in shared_ids]
             shared = (
                 db.query(Project)
+                .options(joinedload(Project.analytics))
                 .filter(
                     Project.id.in_(shared_ids),
                     Project.is_system.is_(False),
@@ -221,13 +262,22 @@ class ProjectService:
             project = db.query(Project).filter(Project.id == _as_uuid(project_id)).first()
             if not project:
                 return None
-            
-            if name:
+
+            changed = False
+            if name and name != project.name:
                 project.name = name
+                changed = True
             if description is not None:
-                project.description = description
-            
+                normalized_description = description or None
+                if normalized_description != project.description:
+                    project.description = normalized_description
+                    changed = True
+
+            if changed:
+                ProjectService.touch_project_activity(db, project.id)
+
             db.commit()
+            db.refresh(project)
             logger.info(f"Project {project_id} updated successfully")
             return project
         
@@ -314,8 +364,10 @@ class ProjectService:
                 return False
 
             audio_path = generation.audio_path
+            owning_project_id = generation.project_id
 
             db.delete(generation)
+            ProjectService.touch_project_activity(db, owning_project_id)
             db.commit()
             ProjectService._delete_generation_audio(audio_path)
             return True

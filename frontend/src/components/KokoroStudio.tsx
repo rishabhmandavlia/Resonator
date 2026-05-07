@@ -35,6 +35,7 @@ import {
 import { usePersistentState } from "../hooks/usePersistentState";
 import { AudioLibrary, type AudioLibraryItem } from "./AudioLibrary";
 import { AudioWaveformPlayer } from "./AudioWaveformPlayer";
+import { GenerationHelpBook } from "./GenerationHelpBook";
 import { StatusToast } from "./ui/status-toast";
 import { Progress } from "./ui/progress";
 
@@ -46,10 +47,14 @@ export function KokoroStudio({
   preSelectedProjectId,
   forceStandalone,
   lockProjectSelection,
+  showWritingGuideTrigger = true,
+  onProjectActivity,
 }: {
   preSelectedProjectId?: string;
   forceStandalone?: boolean;
   lockProjectSelection?: boolean;
+  showWritingGuideTrigger?: boolean;
+  onProjectActivity?: (updatedAt: string) => void;
 } = {}) {
   const { user, isLoading: authLoading } = useAuth();
 
@@ -313,6 +318,9 @@ export function KokoroStudio({
           );
           if (projectToUse !== STANDALONE_PROJECT_ID) {
             await loadGenerations();
+            onProjectActivity?.(
+              generation.created_at || new Date().toISOString(),
+            );
           }
           setIsGenerating(false);
           setGenerationJobId(null);
@@ -387,6 +395,7 @@ export function KokoroStudio({
       setCurrentGeneration(null);
     }
 
+    onProjectActivity?.(new Date().toISOString());
     setSuccess("Generation deleted successfully!");
   };
 
@@ -507,6 +516,13 @@ export function KokoroStudio({
               </p>
             </div>
           </div>
+
+          {showWritingGuideTrigger && (
+            <GenerationHelpBook
+              triggerLabel="Writing guide"
+              triggerClassName="bg-white/80"
+            />
+          )}
         </div>
       </div>
 

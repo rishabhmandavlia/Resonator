@@ -25,6 +25,7 @@ import {
 
 import { apiClient, type ProjectSummary } from "../services/api";
 import { useAuth } from "../services/auth";
+import { GenerationHelpBook } from "./GenerationHelpBook";
 import { KokoroStudio } from "./KokoroStudio";
 import { Alert, AlertDescription } from "./ui/alert";
 import {
@@ -109,6 +110,24 @@ export function Projects() {
     setError(null);
     setSuccess(null);
   }, []);
+
+  const handleProjectActivity = useCallback(
+    (projectId: string, updatedAt: string) => {
+      setProjects((current) =>
+        current.map((project) =>
+          project.id === projectId
+            ? { ...project, updated_at: updatedAt }
+            : project,
+        ),
+      );
+      setSelectedProject((current) =>
+        current && current.id === projectId
+          ? { ...current, updated_at: updatedAt }
+          : current,
+      );
+    },
+    [],
+  );
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const normalizedProjectQuery = deferredSearchQuery.trim().toLowerCase();
@@ -627,6 +646,7 @@ export function Projects() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <GenerationHelpBook triggerLabel="Writing guide" />
                   {!isOwnedProject(selectedProject) && (
                     <Badge variant="outline">Shared Project</Badge>
                   )}
@@ -663,6 +683,10 @@ export function Projects() {
               <KokoroStudio
                 preSelectedProjectId={selectedProject.id}
                 lockProjectSelection
+                showWritingGuideTrigger={false}
+                onProjectActivity={(updatedAt) =>
+                  handleProjectActivity(selectedProject.id, updatedAt)
+                }
               />
             </div>
           </div>

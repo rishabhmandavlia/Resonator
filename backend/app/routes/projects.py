@@ -283,6 +283,12 @@ def create_generation_record(
         title=title,
     )
     db.add(generation)
+    db.flush()
+    ProjectService.touch_project_activity(
+        db,
+        project_id,
+        activity_at=generation.created_at or datetime.utcnow(),
+    )
     db.commit()
     db.refresh(generation)
     return generation

@@ -285,6 +285,8 @@ class Project(Base):
 
     @property
     def updated_at(self):
+        if self.analytics and self.analytics.last_modified:
+            return self.analytics.last_modified
         return self.created_at
 
 
