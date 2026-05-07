@@ -149,9 +149,9 @@ export function GenerationHelpBook({
               Shape pauses, pacing, and emotion with writing.
             </DialogTitle>
             <DialogDescription className="max-w-3xl text-sm leading-6 text-muted-foreground">
-              Small text changes can make the same voice sound calmer,
-              sharper, slower, more dramatic, or more natural. Use this guide
-              as a quick scriptwriting cheat sheet while you work.
+              Small text changes can make the same voice sound calmer, sharper,
+              slower, more dramatic, or more natural. Use this guide as a quick
+              scriptwriting cheat sheet while you work.
             </DialogDescription>
           </DialogHeader>
 
@@ -161,10 +161,10 @@ export function GenerationHelpBook({
                 <CardHeader className="pb-3">
                   <CardTitle className="min-w-0 text-base leading-snug">
                     <span className="flex min-w-0 items-start gap-2">
-                    <PauseCircle className="h-4 w-4 text-primary" />
-                    <span className="min-w-0 break-words">
-                      Punctuation changes pauses
-                    </span>
+                      <PauseCircle className="h-4 w-4 text-primary" />
+                      <span className="min-w-0 break-words">
+                        Punctuation changes pauses
+                      </span>
                     </span>
                   </CardTitle>
                 </CardHeader>
@@ -178,8 +178,10 @@ export function GenerationHelpBook({
                 <CardHeader className="pb-3">
                   <CardTitle className="min-w-0 text-base leading-snug">
                     <span className="flex min-w-0 items-start gap-2">
-                    <Mic2 className="h-4 w-4 text-primary" />
-                    <span className="min-w-0 break-words">Layout changes rhythm</span>
+                      <Mic2 className="h-4 w-4 text-primary" />
+                      <span className="min-w-0 break-words">
+                        Layout changes rhythm
+                      </span>
                     </span>
                   </CardTitle>
                 </CardHeader>
@@ -193,21 +195,25 @@ export function GenerationHelpBook({
                 <CardHeader className="pb-3">
                   <CardTitle className="min-w-0 text-base leading-snug">
                     <span className="flex min-w-0 items-start gap-2">
-                    <MessageSquareQuote className="h-4 w-4 text-primary" />
-                    <span className="min-w-0 break-words">Wording changes tone</span>
+                      <MessageSquareQuote className="h-4 w-4 text-primary" />
+                      <span className="min-w-0 break-words">
+                        Wording changes tone
+                      </span>
                     </span>
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="min-w-0 break-words text-sm leading-6 text-muted-foreground">
-                  Softer words feel warm and intimate. Sharper words feel urgent,
-                  aggressive, or intense.
+                  Softer words feel warm and intimate. Sharper words feel
+                  urgent, aggressive, or intense.
                 </CardContent>
               </Card>
             </div>
 
             <Card className="min-w-0 overflow-hidden border-border/60 shadow-sm">
               <CardHeader>
-                <CardTitle className="text-lg">Punctuation quick guide</CardTitle>
+                <CardTitle className="text-lg">
+                  Punctuation quick guide
+                </CardTitle>
                 <CardDescription>
                   Use punctuation intentionally. Overdoing symbols usually hurts
                   clarity.
@@ -265,7 +271,9 @@ export function GenerationHelpBook({
 
               <Card className="min-w-0 overflow-hidden border-border/60 shadow-sm">
                 <CardHeader>
-                  <CardTitle className="text-lg">Quick emphasis rules</CardTitle>
+                  <CardTitle className="text-lg">
+                    Quick emphasis rules
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="min-w-0">
                   <ul className="space-y-3 text-sm leading-6 text-muted-foreground">
@@ -285,7 +293,8 @@ export function GenerationHelpBook({
                       <span className="font-semibold text-foreground">
                         Casual words
                       </span>{" "}
-                      like "yeah", "gonna", or "kinda" can make delivery feel less robotic.
+                      like "yeah", "gonna", or "kinda" can make delivery feel
+                      less robotic.
                     </li>
                     <li>
                       <span className="font-semibold text-foreground">
@@ -343,17 +352,21 @@ export function GenerationHelpBook({
                   Stability tips
                 </CardTitle>
                 <CardDescription className="text-amber-900/85">
-                  Good punctuation improves timing, pauses, and clarity. Too many
-                  symbols usually make the output less reliable.
+                  Good punctuation improves timing, pauses, and clarity. Too
+                  many symbols usually make the output less reliable.
                 </CardDescription>
               </CardHeader>
               <CardContent className="min-w-0">
                 <ul className="space-y-2 text-sm leading-6 text-amber-950">
                   <li>Avoid giant unbroken sentences.</li>
-                  <li>Do not stack too many symbols like !!!!! or ............</li>
+                  <li>
+                    Do not stack too many symbols like !!!!! or ............
+                  </li>
                   <li>Use ellipses for hesitation, not on every line.</li>
                   <li>Rewrite for rhythm, not just grammar.</li>
-                  <li>Think like a scriptwriter: pace, breath, then wording.</li>
+                  <li>
+                    Think like a scriptwriter: pace, breath, then wording.
+                  </li>
                 </ul>
               </CardContent>
             </Card>

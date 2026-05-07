@@ -392,9 +392,9 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                     onClick={() => handleNavigationClick(item.id)}
                     aria-current={isActive ? "page" : undefined}
                     className={cn(
-                      "relative flex items-center overflow-hidden border border-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_28px_rgba(15,23,42,0.16)] focus-visible:text-white",
+                      "relative flex items-center overflow-hidden border border-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:shadow-[0_18px_28px_rgba(15,23,42,0.16)] focus-visible:text-white",
                       isExpanded
-                        ? "w-full justify-start rounded-2xl px-4 py-3.5"
+                        ? "w-full justify-start rounded-2xl px-4 py-3.5 hover:-translate-y-0.5"
                         : "mx-auto h-12 w-12 justify-center rounded-[1.1rem]",
                       isActive
                         ? "border-white/15 bg-gradient-to-br from-sidebar-primary to-sidebar-primary/80 text-white shadow-[0_18px_35px_rgba(34,197,94,0.18)] ring-1 ring-white/12"
@@ -433,12 +433,14 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
                   </button>
 
                   {!isExpanded && (
-                    <div className="pointer-events-none absolute left-full ml-4 translate-x-2 rounded-xl bg-gradient-to-br from-sidebar-primary to-sidebar-primary/90 px-3 py-2 whitespace-nowrap text-sidebar-primary-foreground opacity-0 shadow-lg transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100 z-50">
-                      <div className="text-sm font-medium">{item.name}</div>
-                      <div className="mt-1 text-xs opacity-75">
-                        {item.description}
+                    <div className="pointer-events-none absolute inset-y-0 left-full z-50 ml-4 flex translate-y-[6px] items-center">
+                      <div className="translate-x-2 rounded-xl bg-gradient-to-br from-sidebar-primary to-sidebar-primary/90 px-3 py-2 whitespace-nowrap text-sidebar-primary-foreground opacity-0 shadow-lg transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100">
+                        <div className="text-sm font-medium">{item.name}</div>
+                        <div className="mt-1 text-xs opacity-75">
+                          {item.description}
+                        </div>
+                        <div className="absolute left-0 top-1/2 h-2 w-2 -translate-x-1 -translate-y-1/2 rotate-45 bg-sidebar-primary" />
                       </div>
-                      <div className="absolute left-0 top-1/2 h-2 w-2 -translate-x-1 -translate-y-1/2 rotate-45 bg-sidebar-primary" />
                     </div>
                   )}
                 </div>
