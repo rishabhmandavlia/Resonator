@@ -9,6 +9,7 @@ import {
 import { AuthProvider, useAuth } from "./services/auth";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
+import { ResetPassword } from "./pages/ResetPassword";
 import { Layout } from "./components/Layout";
 
 function AuthSplash() {
@@ -80,6 +81,7 @@ export default function App() {
               </PublicOnlyRoute>
             }
           />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/*" element={<ProtectedLayout />} />
         </Routes>
       </AuthProvider>

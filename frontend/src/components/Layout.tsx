@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { KokoroStudio } from "./KokoroStudio";
 import { Projects } from "./Projects";
@@ -7,9 +8,29 @@ import { SettingsPage } from "./SettingsPage";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAuth } from "../services/auth";
 
+const LAYOUT_PAGES = new Set(["studio", "projects", "library", "settings"]);
+
+function getRequestedLayoutPage(search: string): string | null {
+  const page = new URLSearchParams(search).get("page");
+  if (!page || !LAYOUT_PAGES.has(page)) {
+    return null;
+  }
+  return page;
+}
+
 export function Layout() {
-  const [currentPage, setCurrentPage] = useState("studio");
+  const location = useLocation();
+  const [currentPage, setCurrentPage] = useState(
+    () => getRequestedLayoutPage(location.search) || "studio",
+  );
   const { activeAccount, hasValidActiveAccount, isAuthenticated } = useAuth();
+
+  useEffect(() => {
+    const requestedPage = getRequestedLayoutPage(location.search);
+    if (requestedPage) {
+      setCurrentPage(requestedPage);
+    }
+  }, [location.search]);
 
   const renderContent = () => {
     switch (currentPage) {

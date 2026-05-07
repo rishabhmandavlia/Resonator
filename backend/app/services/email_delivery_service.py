@@ -171,3 +171,57 @@ class EmailDeliveryService:
             return
 
         EmailDeliveryService._send_via_smtp(message)
+
+    @staticmethod
+    def send_password_reset_email(
+        recipient_email: str,
+        reset_url: str,
+        expires_in_minutes: int,
+    ) -> None:
+        subject = f"Reset your password for {APPLICATION_NAME}"
+        text_body = (
+            f"Hello,\n\n"
+            f"We received a request to reset the password for your {APPLICATION_NAME} account.\n\n"
+            f"Use the secure link below to set a new password:\n\n"
+            f"{reset_url}\n\n"
+            f"This link expires in {expires_in_minutes} minutes and can only be used once.\n\n"
+            "If you did not request a password reset, you can safely ignore this email.\n\n"
+            f"Thanks,\n{APPLICATION_NAME}"
+        )
+        html_body = (
+            "<html>"
+            "<body style=\"margin:0;padding:24px;background:#f8fafc;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
+            "<div style=\"max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden;box-shadow:0 20px 45px rgba(15,23,42,0.08);\">"
+            "<div style=\"padding:28px 32px;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#ffffff;\">"
+            f"<div style=\"font-size:13px;letter-spacing:0.18em;text-transform:uppercase;opacity:0.72;\">{APPLICATION_NAME}</div>"
+            "<h1 style=\"margin:14px 0 0;font-size:28px;line-height:1.2;\">Reset your password</h1>"
+            "</div>"
+            "<div style=\"padding:32px;\">"
+            f"<p style=\"margin:0 0 16px;font-size:16px;line-height:1.7;color:#334155;\">We received a request to reset the password for your <strong>{APPLICATION_NAME}</strong> account.</p>"
+            f"<p style=\"margin:0 0 24px;font-size:16px;line-height:1.7;color:#334155;\">Use the secure button below to choose a new password. This link expires in <strong>{expires_in_minutes} minutes</strong> and can only be used once.</p>"
+            f"<div style=\"margin:24px 0 28px;\"><a href=\"{reset_url}\" style=\"display:inline-block;padding:14px 22px;border-radius:14px;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;\">Reset password</a></div>"
+            f"<p style=\"margin:0 0 12px;font-size:14px;line-height:1.7;color:#475569;\">If the button does not work, copy and paste this URL into your browser:</p>"
+            f"<p style=\"margin:0 0 14px;font-size:14px;line-height:1.7;word-break:break-all;color:#0f172a;\">{reset_url}</p>"
+            "<p style=\"margin:0;font-size:14px;line-height:1.7;color:#64748b;\">If you did not request a password reset, you can safely ignore this email.</p>"
+            "</div>"
+            "</div>"
+            "</body>"
+            "</html>"
+        )
+        message = EmailDeliveryService._build_message(
+            recipient_email,
+            subject,
+            text_body,
+            html_body,
+        )
+
+        if EMAIL_DELIVERY_MODE == "console":
+            logger.info(
+                "EMAIL_DELIVERY_MODE=console, password reset link for %s is %s (valid for %s minutes)",
+                recipient_email,
+                reset_url,
+                expires_in_minutes,
+            )
+            return
+
+        EmailDeliveryService._send_via_smtp(message)

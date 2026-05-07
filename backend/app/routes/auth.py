@@ -141,6 +141,21 @@ class DeleteAccountRequest(BaseModel):
     current_password: str | None = None
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=20)
+    new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
+    confirm_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
+
+
+class PasswordResetTokenValidationResponse(BaseModel):
+    emailHint: str
+    expiresAt: str
+
+
 class ProviderReauthRequest(BaseModel):
     current_password: str | None = None
 
@@ -178,6 +193,28 @@ def _build_user_response(user: User, request: Request) -> UserResponse:
         has_email_auth=user.has_email_auth,
         is_email_verified=user.is_email_verified,
     )
+
+
+def _require_current_password(
+    user: User,
+    current_password: str | None,
+    *,
+    missing_detail: str,
+) -> str:
+    normalized_current_password = (current_password or "").strip()
+    if not normalized_current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=missing_detail,
+        )
+
+    if not EmailAuthService.verify_password(normalized_current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    return normalized_current_password
 
 
 @router.get("/providers", response_model=ProviderListResponse)
@@ -235,18 +272,6 @@ async def start_oauth_provider_link(
     db: Session = Depends(get_db),
 ) -> AuthorizationUrlResponse:
     user = _get_user_or_404(db, current_user)
-    if user.has_email_auth:
-        if not payload.current_password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required to connect a provider",
-            )
-        if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect",
-            )
-
     existing_identity = (
         db.query(OAuthIdentity)
         .filter(
@@ -261,7 +286,14 @@ async def start_oauth_provider_link(
             detail="This provider is already connected to your account",
         )
 
-    authorization_url, session = await OAuthService.create_authorization_request(
+    if user.has_email_auth:
+        _require_current_password(
+            user,
+            payload.current_password,
+            missing_detail="Current password is required to connect a provider",
+        )
+
+    session, authorization_url = await OAuthService.create_authorization_request(
         db,
         request,
         provider,
@@ -281,18 +313,6 @@ async def start_oauth_provider_link_redirect(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     user = _get_user_or_404(db, current_user)
-    if user.has_email_auth:
-        if not current_password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required to connect a provider",
-            )
-        if not EmailAuthService.verify_password(current_password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect",
-            )
-
     existing_identity = (
         db.query(OAuthIdentity)
         .filter(
@@ -307,7 +327,14 @@ async def start_oauth_provider_link_redirect(
             detail="This provider is already connected to your account",
         )
 
-    authorization_url, session = await OAuthService.create_authorization_request(
+    if user.has_email_auth:
+        _require_current_password(
+            user,
+            current_password,
+            missing_detail="Current password is required to connect a provider",
+        )
+
+    session, authorization_url = await OAuthService.create_authorization_request(
         db,
         request,
         provider,
@@ -334,35 +361,41 @@ async def oauth_callback(
     db: Session = Depends(get_db),
 ):
     if error:
-        redirect = OAuthService.build_frontend_url(
-            "/login",
-            {"authError": error_description or error},
+        return OAuthService.build_oauth_callback_error_response(
+            db,
+            provider,
+            state,
+            error_description or error,
         )
-        return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
 
     if not code or not state:
-        redirect = OAuthService.build_frontend_url(
-            "/login",
-            {"authError": "Missing OAuth callback parameters"},
+        return OAuthService.build_oauth_callback_error_response(
+            db,
+            provider,
+            state,
+            "Missing OAuth callback parameters",
         )
-        return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
 
     try:
         return await OAuthService.handle_oauth_callback(db, request, provider, code, state)
     except HTTPException as exc:
         logger.warning("OAuth callback failed for %s: %s", provider, exc.detail)
-        redirect = OAuthService.build_frontend_url(
-            "/login",
-            {"authError": str(exc.detail)},
+        db.rollback()
+        return OAuthService.build_oauth_callback_error_response(
+            db,
+            provider,
+            state,
+            str(exc.detail),
         )
-        return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
     except Exception as exc:
         logger.exception("Unexpected OAuth callback failure for %s", provider)
-        redirect = OAuthService.build_frontend_url(
-            "/login",
-            {"authError": "OAuth login failed"},
+        db.rollback()
+        return OAuthService.build_oauth_callback_error_response(
+            db,
+            provider,
+            state,
+            "OAuth login failed",
         )
-        return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/switch", response_model=AuthSessionResponse)
@@ -590,17 +623,11 @@ async def start_current_user_email_change(
     try:
         user = _get_user_or_404(db, current_user)
         if user.has_email_auth:
-            if not payload.current_password:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Current password is required to change your email",
-                )
-
-            if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Current password is incorrect",
-                )
+            _require_current_password(
+                user,
+                payload.current_password,
+                missing_detail="Current password is required to change your email",
+            )
 
         challenge = EmailAuthService.start_email_change(
             db,
@@ -707,12 +734,14 @@ async def set_current_user_password(
 ) -> StatusResponse:
     user = _get_user_or_404(db, current_user)
     EmailAuthService.enable_password_auth(user, payload.new_password)
+    EmailAuthService.invalidate_password_reset_tokens(db, user)
     db.commit()
     return StatusResponse(
         message="Password set successfully. Email/password sign-in is now enabled.",
     )
 
 
+@router.post("/change-password", response_model=StatusResponse)
 @router.post("/me/password", response_model=StatusResponse)
 async def change_current_user_password(
     payload: ChangePasswordRequest,
@@ -726,13 +755,13 @@ async def change_current_user_password(
             detail="Set a password before trying to change it",
         )
 
-    if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
+    normalized_current_password = _require_current_password(
+        user,
+        payload.current_password,
+        missing_detail="Current password is required",
+    )
 
-    if EmailAuthService.verify_password(payload.new_password, user.password_hash):
+    if payload.new_password == normalized_current_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="New password must be different from the current password",
@@ -741,8 +770,87 @@ async def change_current_user_password(
     EmailAuthService.validate_password(payload.new_password, user.email)
     user.password_hash = EmailAuthService.hash_password(payload.new_password)
     user.updated_at = datetime.utcnow()
+    EmailAuthService.invalidate_password_reset_tokens(db, user)
     db.commit()
     return StatusResponse(message="Password updated successfully")
+
+
+@router.post("/forgot-password", response_model=StatusResponse)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StatusResponse:
+    try:
+        result = EmailAuthService.start_password_reset(db, request, str(payload.email))
+        return StatusResponse(message=str(result["message"]))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to start password reset for %s", payload.email)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start password reset",
+        ) from exc
+
+
+@router.get(
+    "/reset-password/validate",
+    response_model=PasswordResetTokenValidationResponse,
+)
+async def validate_password_reset_token(
+    token: str = Query(..., min_length=20),
+    db: Session = Depends(get_db),
+) -> PasswordResetTokenValidationResponse:
+    try:
+        token_payload = EmailAuthService.validate_password_reset_request(db, token)
+        return PasswordResetTokenValidationResponse(**token_payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to validate password reset token")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to validate password reset link",
+        ) from exc
+
+
+@router.post("/reset-password", response_model=StatusResponse)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> StatusResponse:
+    try:
+        user = EmailAuthService.reset_password(
+            db,
+            request,
+            payload.token,
+            payload.new_password,
+            payload.confirm_password,
+        )
+        current_session = OAuthService.get_session_from_request(request, db)
+        _session_payload, cleared_current_session = OAuthService.remove_user_from_all_sessions(
+            db,
+            user.id,
+            current_session.id if current_session is not None else None,
+        )
+        db.commit()
+        if cleared_current_session:
+            OAuthService.clear_session_cookie(response)
+        return StatusResponse(message="Password reset successful. You can now sign in with your new password.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to reset password")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reset password",
+        ) from exc
 
 
 @router.delete("/me", response_model=AuthSessionResponse)
@@ -762,17 +870,11 @@ async def delete_current_user_account(
         )
 
     if user.has_email_auth:
-        if not payload.current_password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required to delete this account",
-            )
-
-        if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect",
-            )
+        _require_current_password(
+            user,
+            payload.current_password,
+            missing_detail="Current password is required to delete this account",
+        )
 
     current_session = OAuthService.get_session_from_request(request, db)
     session_payload, cleared_session = OAuthService.remove_user_from_all_sessions(
@@ -800,17 +902,26 @@ async def unlink_oauth_provider(
     db: Session = Depends(get_db),
 ) -> AuthSessionResponse:
     user = _get_user_or_404(db, current_user)
+    linked_identity = (
+        db.query(OAuthIdentity)
+        .filter(
+            OAuthIdentity.user_id == user.id,
+            OAuthIdentity.provider == provider,
+        )
+        .first()
+    )
+    if linked_identity is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Provider is not connected to this account",
+        )
+
     if user.has_email_auth:
-        if not payload.current_password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required to disconnect a provider",
-            )
-        if not EmailAuthService.verify_password(payload.current_password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect",
-            )
+        _require_current_password(
+            user,
+            payload.current_password,
+            missing_detail="Current password is required to disconnect a provider",
+        )
 
     session_payload, cleared_session = OAuthService.unlink_provider(
         db,

@@ -144,6 +144,11 @@ export interface StatusResponse {
   message: string;
 }
 
+export interface PasswordResetTokenValidationResponse {
+  emailHint: string;
+  expiresAt: string;
+}
+
 export interface AuthorizationUrlResponse {
   authorizationUrl: string;
 }
@@ -221,6 +226,11 @@ function normalizeApiDate(value?: string | null): string {
   }
 
   return `${trimmedValue}Z`;
+}
+
+function normalizePasswordInput(value?: string | null): string | undefined {
+  const trimmedValue = value?.trim();
+  return trimmedValue ? trimmedValue : undefined;
 }
 
 function normalizeProjectResponse(project: ProjectSummary): ProjectSummary {
@@ -543,7 +553,7 @@ class ApiClient {
         method: "POST",
         body: JSON.stringify({
           new_email: newEmail,
-          current_password: currentPassword,
+          current_password: normalizePasswordInput(currentPassword),
         }),
       },
     );
@@ -581,6 +591,40 @@ class ApiClient {
     return normalizeCurrentUserResponse(user);
   }
 
+  async requestPasswordReset(email: string): Promise<StatusResponse> {
+    return this.request<StatusResponse>("/api/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  async validatePasswordResetToken(
+    token: string,
+  ): Promise<PasswordResetTokenValidationResponse> {
+    const suffix = new URLSearchParams({ token }).toString();
+    return this.request<PasswordResetTokenValidationResponse>(
+      `/api/auth/reset-password/validate?${suffix}`,
+      {
+        method: "GET",
+      },
+    );
+  }
+
+  async resetPassword(
+    token: string,
+    newPassword: string,
+    confirmPassword: string,
+  ): Promise<StatusResponse> {
+    return this.request<StatusResponse>("/api/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({
+        token,
+        new_password: newPassword,
+        confirm_password: confirmPassword,
+      }),
+    });
+  }
+
   async resendCurrentUserEmailChange(): Promise<RegistrationChallengeResponse> {
     return this.request<RegistrationChallengeResponse>(
       "/api/auth/change-email/resend",
@@ -606,7 +650,7 @@ class ApiClient {
     return this.request<StatusResponse>("/api/auth/me/password", {
       method: "POST",
       body: JSON.stringify({
-        current_password: currentPassword,
+        current_password: normalizePasswordInput(currentPassword),
         new_password: newPassword,
       }),
     });
@@ -620,7 +664,7 @@ class ApiClient {
       method: "DELETE",
       body: JSON.stringify({
         confirmation,
-        current_password: currentPassword,
+        current_password: normalizePasswordInput(currentPassword),
       }),
     });
   }

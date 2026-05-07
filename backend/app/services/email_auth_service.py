@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import os
 import re
 import secrets
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 
 import bcrypt
 from fastapi import HTTPException, Request, status
@@ -14,7 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.services.email_delivery_service import EmailDeliveryService
-from database.models import PendingEmailChange, PendingEmailVerification, User
+from database.models import PasswordResetToken, PendingEmailChange, PendingEmailVerification, User
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,12 @@ OAUTH_LINK_RESEND_RATE_LIMIT = (5, 15 * 60)
 EMAIL_CHANGE_REQUEST_RATE_LIMIT = (5, 15 * 60)
 EMAIL_CHANGE_VERIFY_RATE_LIMIT = (10, 15 * 60)
 EMAIL_CHANGE_RESEND_RATE_LIMIT = (5, 15 * 60)
+PASSWORD_RESET_REQUEST_RATE_LIMIT = (5, 15 * 60)
+PASSWORD_RESET_SUBMIT_RATE_LIMIT = (10, 15 * 60)
+PASSWORD_RESET_TOKEN_TTL_MINUTES = int(
+    os.getenv("PASSWORD_RESET_TOKEN_TTL_MINUTES", "20")
+)
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 
 _RATE_LIMIT_STORE: dict[str, list[float]] = {}
 
@@ -120,6 +129,8 @@ class EmailAuthService:
             "email_change_request": EMAIL_CHANGE_REQUEST_RATE_LIMIT,
             "email_change_verify": EMAIL_CHANGE_VERIFY_RATE_LIMIT,
             "email_change_resend": EMAIL_CHANGE_RESEND_RATE_LIMIT,
+            "password_reset_request": PASSWORD_RESET_REQUEST_RATE_LIMIT,
+            "password_reset_submit": PASSWORD_RESET_SUBMIT_RATE_LIMIT,
         }
         max_attempts, window_seconds = limits[action]
         key = EmailAuthService._build_rate_limit_key(action, email, request)
@@ -273,6 +284,260 @@ class EmailAuthService:
             "verificationType": "email_change",
             "provider": None,
         }
+
+    @staticmethod
+    def build_password_reset_token_hash(reset_token: str) -> str:
+        return hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def build_password_reset_url(reset_token: str) -> str:
+        return f"{FRONTEND_URL}/reset-password?{urlencode({'token': reset_token})}"
+
+    @staticmethod
+    def mask_email(email: str) -> str:
+        local_part, _, domain = email.partition("@")
+        if not domain:
+            return email
+
+        if len(local_part) <= 2:
+            masked_local_part = f"{local_part[:1]}*"
+        else:
+            masked_local_part = f"{local_part[:1]}{'*' * (len(local_part) - 2)}{local_part[-1]}"
+
+        domain_name, dot, suffix = domain.partition(".")
+        if len(domain_name) <= 2:
+            masked_domain_name = f"{domain_name[:1]}*"
+        else:
+            masked_domain_name = f"{domain_name[:1]}{'*' * (len(domain_name) - 2)}{domain_name[-1]}"
+
+        masked_domain = (
+            f"{masked_domain_name}{dot}{suffix}"
+            if dot
+            else masked_domain_name
+        )
+        return f"{masked_local_part}@{masked_domain}"
+
+    @staticmethod
+    def is_password_reset_eligible_user(user: User | None) -> bool:
+        if user is None:
+            return False
+        if not user.is_active or not user.is_email_verified:
+            return False
+        if not user.email:
+            return False
+        return not user.email.endswith("@oauth.local")
+
+    @staticmethod
+    def invalidate_password_reset_tokens(
+        db: Session,
+        user: User,
+        *,
+        exclude_token_id: str | None = None,
+    ) -> None:
+        now = _utcnow()
+        query = db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.invalidated_at.is_(None),
+        )
+
+        if exclude_token_id is not None:
+            query = query.filter(PasswordResetToken.id != exclude_token_id)
+
+        for token in query.all():
+            token.invalidated_at = now
+            token.updated_at = now
+
+        db.flush()
+
+    @staticmethod
+    def start_password_reset(
+        db: Session,
+        request: Request,
+        email: str,
+    ) -> dict[str, str]:
+        normalized_email = EmailAuthService.normalize_email(email)
+        EmailAuthService.enforce_rate_limit(
+            "password_reset_request",
+            normalized_email,
+            request,
+        )
+
+        generic_response = {
+            "message": (
+                "If an account exists for that email, a password reset link will arrive shortly."
+            )
+        }
+
+        user = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .first()
+        )
+        if not EmailAuthService.is_password_reset_eligible_user(user):
+            return generic_response
+
+        now = _utcnow()
+        EmailAuthService.invalidate_password_reset_tokens(db, user)
+
+        raw_reset_token = secrets.token_urlsafe(48)
+        reset_token = PasswordResetToken(
+            user_id=user.id,
+            email=normalized_email,
+            token_hash=EmailAuthService.build_password_reset_token_hash(raw_reset_token),
+            expires_at=now + timedelta(minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES),
+            requested_ip=request.client.host if request.client else None,
+            requested_user_agent=request.headers.get("user-agent"),
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(reset_token)
+        db.flush()
+
+        try:
+            EmailDeliveryService.send_password_reset_email(
+                recipient_email=normalized_email,
+                reset_url=EmailAuthService.build_password_reset_url(raw_reset_token),
+                expires_in_minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES,
+            )
+            db.commit()
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Failed to deliver password reset email to %s",
+                normalized_email,
+            )
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send password reset email",
+            ) from exc
+
+        return generic_response
+
+    @staticmethod
+    def get_password_reset_token_record(
+        db: Session,
+        reset_token: str,
+    ) -> PasswordResetToken | None:
+        if not reset_token:
+            return None
+
+        return (
+            db.query(PasswordResetToken)
+            .filter(
+                PasswordResetToken.token_hash
+                == EmailAuthService.build_password_reset_token_hash(reset_token)
+            )
+            .first()
+        )
+
+    @staticmethod
+    def validate_password_reset_token(
+        db: Session,
+        reset_token: str,
+    ) -> PasswordResetToken:
+        token_record = EmailAuthService.get_password_reset_token_record(db, reset_token)
+        if token_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password reset link is invalid.",
+            )
+
+        now = _utcnow()
+        if token_record.used_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This password reset link has already been used.",
+            )
+
+        if token_record.invalidated_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This password reset link is no longer valid. Request a new one.",
+            )
+
+        if token_record.expires_at < now:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This password reset link has expired. Request a new one.",
+            )
+
+        user = token_record.user
+        if not EmailAuthService.is_password_reset_eligible_user(user):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This password reset link is no longer valid. Request a new one.",
+            )
+
+        if EmailAuthService.normalize_email(user.email) != token_record.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This password reset link is no longer valid. Request a new one.",
+            )
+
+        return token_record
+
+    @staticmethod
+    def validate_password_reset_request(
+        db: Session,
+        reset_token: str,
+    ) -> dict[str, str]:
+        token_record = EmailAuthService.validate_password_reset_token(db, reset_token)
+        return {
+            "emailHint": EmailAuthService.mask_email(token_record.email),
+            "expiresAt": token_record.expires_at.isoformat(),
+        }
+
+    @staticmethod
+    def reset_password(
+        db: Session,
+        request: Request,
+        reset_token: str,
+        new_password: str,
+        confirm_password: str,
+    ) -> User:
+        rate_limit_key = EmailAuthService.build_password_reset_token_hash(reset_token)[:24]
+        EmailAuthService.enforce_rate_limit(
+            "password_reset_submit",
+            rate_limit_key,
+            request,
+        )
+
+        token_record = EmailAuthService.validate_password_reset_token(db, reset_token)
+        if new_password != confirm_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password confirmation does not match",
+            )
+
+        user = token_record.user
+        EmailAuthService.validate_password(new_password, user.email)
+        if user.password_hash and EmailAuthService.verify_password(new_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be different from the current password",
+            )
+
+        now = _utcnow()
+        user.password_hash = EmailAuthService.hash_password(new_password)
+        user.has_email_auth = True
+        user.is_verified = True
+        user.is_email_verified = True
+        user.updated_at = now
+        user.last_login = now
+
+        token_record.used_at = now
+        token_record.updated_at = now
+        EmailAuthService.invalidate_password_reset_tokens(
+            db,
+            user,
+            exclude_token_id=token_record.id,
+        )
+        db.flush()
+        return user
 
     @staticmethod
     def validate_email_change_target(

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   KeyRound,
@@ -108,6 +109,8 @@ function isValidEmailFormat(value: string): boolean {
 }
 
 export function SettingsPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const {
     activeAccount,
     activeAccountId,
@@ -146,6 +149,8 @@ export function SettingsPage() {
     setEmailChangeResendRemainingSeconds,
   ] = useState(0);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [isSendingPasswordResetLink, setIsSendingPasswordResetLink] =
+    useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [providerActionDialog, setProviderActionDialog] =
@@ -163,18 +168,56 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const providerLinkSuccess = searchParams.get("providerLinkSuccess");
+    const providerLinkError = searchParams.get("providerLinkError");
+
+    if (!providerLinkSuccess && !providerLinkError) {
+      return;
+    }
+
+    setNotice({
+      tone: providerLinkError ? "error" : "success",
+      message: providerLinkError || providerLinkSuccess || "",
+    });
+
+    searchParams.delete("providerLinkSuccess");
+    searchParams.delete("providerLinkError");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: searchParams.toString() ? `?${searchParams.toString()}` : "",
+      },
+      { replace: true },
+    );
+  }, [location.pathname, location.search, navigate]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
     const loadCurrentUser = async () => {
       if (!hasValidActiveAccount) {
-        setCurrentUser(null);
-        setEmailChangeChallenge(null);
-        setEmailChangeOtp("");
-        setIsLoading(false);
+        if (!isCancelled) {
+          setCurrentUser(null);
+          setEmailChangeChallenge(null);
+          setEmailChangeOtp("");
+          setIsLoading(false);
+        }
         return;
       }
 
       try {
         setIsLoading(true);
+        await refreshSession();
+        if (isCancelled) {
+          return;
+        }
+
         const user = await apiClient.getCurrentUser();
+        if (isCancelled) {
+          return;
+        }
+
         setCurrentUser(user);
         setProfileForm({ displayName: user.display_name || "" });
         setEmailForm({ newEmail: user.email, currentPassword: "" });
@@ -185,17 +228,25 @@ export function SettingsPage() {
         setValidatedEmailAddress(null);
         setIsCheckingEmailAvailability(false);
       } catch (err: any) {
-        setNotice({
-          tone: "error",
-          message:
-            err?.detail || err?.message || "Failed to load account settings",
-        });
+        if (!isCancelled) {
+          setNotice({
+            tone: "error",
+            message:
+              err?.detail || err?.message || "Failed to load account settings",
+          });
+        }
       } finally {
-        setIsLoading(false);
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
       }
     };
 
     void loadCurrentUser();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [activeAccountId, hasValidActiveAccount]);
 
   useEffect(() => {
@@ -597,6 +648,32 @@ export function SettingsPage() {
     }
   };
 
+  const handleSendPasswordResetLink = async () => {
+    if (!currentUser?.email) {
+      return;
+    }
+
+    try {
+      setIsSendingPasswordResetLink(true);
+      setNotice(null);
+      await apiClient.requestPasswordReset(currentUser.email);
+      setNotice({
+        tone: "success",
+        message: currentUser.has_email_auth
+          ? `A one-time password reset link was sent to ${currentUser.email}.`
+          : `A secure password setup link was sent to ${currentUser.email}.`,
+      });
+    } catch (err: any) {
+      setNotice({
+        tone: "error",
+        message:
+          err?.detail || err?.message || "Failed to send password reset email",
+      });
+    } finally {
+      setIsSendingPasswordResetLink(false);
+    }
+  };
+
   const handleDeleteAccount = async () => {
     if (!currentUser) {
       return;
@@ -605,9 +682,25 @@ export function SettingsPage() {
     try {
       setIsDeletingAccount(true);
       setNotice(null);
+      const currentUserId = currentUser.id;
+      await refreshSession();
+      const syncedUser = await apiClient.getCurrentUser();
+      setCurrentUser(syncedUser);
+
+      if (syncedUser.id !== currentUserId) {
+        setDeleteForm(EMPTY_DELETE_FORM);
+        setIsDeleteDialogOpen(false);
+        setNotice({
+          tone: "error",
+          message:
+            "The active account changed while confirming deletion. Review the current account and confirm deletion again.",
+        });
+        return;
+      }
+
       await apiClient.deleteCurrentUserAccount(
         deleteForm.confirmation.trim(),
-        currentUser.has_email_auth ? deleteForm.currentPassword : undefined,
+        syncedUser.has_email_auth ? deleteForm.currentPassword : undefined,
       );
       setIsDeleteDialogOpen(false);
       await refreshSession();
@@ -678,6 +771,14 @@ export function SettingsPage() {
         message: `${providerActionDialog.providerLabel} disconnected successfully`,
       });
     } catch (err: any) {
+      if (err?.detail === "Provider is not connected to this account") {
+        await refreshSession();
+        const updatedUser = await apiClient.getCurrentUser();
+        setCurrentUser(updatedUser);
+        setProviderActionDialog(null);
+        setProviderActionPassword("");
+      }
+
       setProviderActionError(
         err?.detail || err?.message || "Failed to update connected provider",
       );
@@ -1283,6 +1384,42 @@ export function SettingsPage() {
                               existing providers.
                             </AlertDescription>
                           </Alert>
+                        )}
+
+                        {currentUser.email && (
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50/90 p-4">
+                            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                              <div className="space-y-1">
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {currentUser.has_email_auth
+                                    ? "Need a reset link instead?"
+                                    : "Prefer to set a password by email?"}
+                                </p>
+                                <p className="text-sm leading-6 text-slate-600">
+                                  {currentUser.has_email_auth
+                                    ? `We can send a single-use password reset link to ${currentUser.email}.`
+                                    : `We can email a secure password setup link to ${currentUser.email} without disconnecting your providers.`}
+                                </p>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() =>
+                                  void handleSendPasswordResetLink()
+                                }
+                                disabled={
+                                  isSendingPasswordResetLink ||
+                                  isChangingPassword
+                                }
+                              >
+                                {isSendingPasswordResetLink
+                                  ? "Sending..."
+                                  : currentUser.has_email_auth
+                                    ? "Email reset link"
+                                    : "Email setup link"}
+                              </Button>
+                            </div>
+                          </div>
                         )}
 
                         <div className="flex justify-end">

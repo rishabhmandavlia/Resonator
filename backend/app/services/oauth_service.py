@@ -329,6 +329,55 @@ class OAuthService:
         return url
 
     @staticmethod
+    def build_provider_link_frontend_url(
+        params: dict[str, str] | None = None,
+    ) -> str:
+        query_params = {"page": "settings"}
+        if params:
+            query_params.update(params)
+        return OAuthService.build_frontend_url("/", query_params)
+
+    @staticmethod
+    def build_oauth_callback_error_response(
+        db: Session,
+        provider_name: str,
+        state: str | None,
+        detail: str,
+    ) -> RedirectResponse:
+        auth_state = None
+        if state:
+            auth_state = (
+                db.query(OAuthAuthorizationState)
+                .filter(
+                    OAuthAuthorizationState.provider == provider_name,
+                    OAuthAuthorizationState.state == state,
+                )
+                .first()
+            )
+
+        is_provider_link_flow = bool(auth_state and auth_state.link_user_id)
+        session = auth_state.session if auth_state is not None else None
+
+        if auth_state is not None:
+            db.delete(auth_state)
+            db.commit()
+
+        redirect_url = (
+            OAuthService.build_provider_link_frontend_url(
+                {"providerLinkError": detail}
+            )
+            if is_provider_link_flow
+            else OAuthService.build_frontend_url("/login", {"authError": detail})
+        )
+        redirect = RedirectResponse(
+            url=redirect_url,
+            status_code=status.HTTP_302_FOUND,
+        )
+        if session is not None and session.is_active:
+            OAuthService.set_session_cookie(redirect, session)
+        return redirect
+
+    @staticmethod
     def get_session_from_request(request: Request, db: Session) -> AuthSession | None:
         raw_session_id = request.cookies.get(SESSION_COOKIE_NAME)
         if not raw_session_id:
@@ -1491,6 +1540,24 @@ class OAuthService:
                     detail="The user for this OAuth link no longer exists",
                 )
 
+            if existing_identity is not None and existing_identity.user_id != link_target_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"This {provider.display_name} account is already linked to another Resonator account. "
+                        "Sign in with that account or unlink it there first."
+                    ),
+                )
+
+            if email_owner is not None and email_owner.id != link_target_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"This {provider.display_name} email address already belongs to another Resonator account. "
+                        "Sign in with that account instead of linking it here."
+                    ),
+                )
+
         requires_explicit_link = (
             existing_identity is None
             and link_target_user is None
@@ -1581,7 +1648,17 @@ class OAuthService:
         db.commit()
 
         response = RedirectResponse(
-            url=OAuthService.build_frontend_url("/"),
+            url=(
+                OAuthService.build_provider_link_frontend_url(
+                    {
+                        "providerLinkSuccess": (
+                            f"{provider.display_name} connected successfully"
+                        ),
+                    }
+                )
+                if link_target_user is not None
+                else OAuthService.build_frontend_url("/")
+            ),
             status_code=status.HTTP_302_FOUND,
         )
         OAuthService.set_session_cookie(response, session)
@@ -1842,6 +1919,7 @@ class OAuthService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Provider is not connected to this account",
             )
+        linked_provider_subject = linked_identity.provider_subject
 
         linked_oauth_count = (
             db.query(OAuthIdentity)
@@ -1902,12 +1980,25 @@ class OAuthService:
                 cleared_current_session = session_deleted
                 active_current_session = None if session_deleted else session
 
+        db.query(PendingOAuthLink).filter(
+            PendingOAuthLink.provider == provider_name,
+            PendingOAuthLink.provider_subject == linked_provider_subject,
+        ).delete(synchronize_session=False)
+        db.query(OAuthAuthorizationState).filter(
+            OAuthAuthorizationState.provider == provider_name,
+            OAuthAuthorizationState.link_user_id == str(user.id),
+        ).delete(synchronize_session=False)
         db.delete(linked_identity)
         db.commit()
+        db.expire_all()
 
         if active_current_session is not None:
-            db.refresh(active_current_session)
-            return OAuthService.serialize_session(active_current_session), False
+            refreshed_current_session = (
+                db.query(AuthSession)
+                .filter(AuthSession.id == active_current_session.id)
+                .first()
+            )
+            return OAuthService.serialize_session(refreshed_current_session), False
 
         return OAuthService.serialize_session(None), cleared_current_session
 

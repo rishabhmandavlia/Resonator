@@ -235,6 +235,14 @@ export function Login() {
                     )}
                   </button>
                 </div>
+                <div className="flex justify-end">
+                  <Link
+                    to="/reset-password"
+                    className="text-xs font-medium text-sky-700 transition underline hover:text-sky-800"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
               </div>
 
               <Button
