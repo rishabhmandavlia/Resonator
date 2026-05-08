@@ -307,13 +307,16 @@ class ApiClient {
 
     const isFormDataBody =
       typeof FormData !== "undefined" && options.body instanceof FormData;
+    const hasRequestBody = options.body != null;
 
     const headers: HeadersInit = isFormDataBody
       ? { ...options.headers }
-      : {
+      : hasRequestBody
+        ? {
           "Content-Type": "application/json",
           ...options.headers,
-        };
+        }
+        : { ...options.headers };
 
     try {
       const response = await fetch(url, {

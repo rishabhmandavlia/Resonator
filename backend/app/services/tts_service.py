@@ -6,6 +6,7 @@ Handles voice model loading, audio generation, and storage.
 import logging
 import math
 import os
+import inspect
 import warnings
 from threading import Event
 from io import BytesIO
@@ -132,6 +133,27 @@ class TTSService:
             TTSService._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             logger.info(f"Using device: {TTSService._device}")
         return TTSService._device
+
+    @staticmethod
+    def _build_supported_kwargs(target, **kwargs):
+        """Return only kwargs accepted by the installed Kokoro callable."""
+        try:
+            signature = inspect.signature(target)
+        except (TypeError, ValueError):
+            return kwargs
+
+        accepts_var_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if accepts_var_kwargs:
+            return kwargs
+
+        return {
+            key: value
+            for key, value in kwargs.items()
+            if key in signature.parameters
+        }
     
     @staticmethod
     def _load_model():
@@ -148,11 +170,17 @@ class TTSService:
                 
                 logger.info(f"Loading Kokoro model from {KOKORO_MODEL_PATH}")
                 config_path = str(KOKORO_CONFIG_PATH) if KOKORO_CONFIG_PATH.exists() else None
-                TTSService._model = KModel(
+                model_kwargs = TTSService._build_supported_kwargs(
+                    KModel,
                     repo_id=KOKORO_REPO_ID,
                     config=config_path,
                     model=str(KOKORO_MODEL_PATH),
-                ).to(device).eval()
+                )
+                logger.info(
+                    "Initializing Kokoro model with supported kwargs: %s",
+                    sorted(model_kwargs.keys()),
+                )
+                TTSService._model = KModel(**model_kwargs).to(device).eval()
                 
                 logger.info("Kokoro model loaded successfully")
             except Exception as e:
@@ -181,11 +209,13 @@ class TTSService:
 
         if language_code not in TTSService._pipelines:
             try:
-                TTSService._pipelines[language_code] = KPipeline(
+                pipeline_kwargs = TTSService._build_supported_kwargs(
+                    KPipeline,
                     lang_code=language_code,
                     repo_id=KOKORO_REPO_ID,
                     model=False,
                 )
+                TTSService._pipelines[language_code] = KPipeline(**pipeline_kwargs)
             except AssertionError as error:
                 raise ValueError(f"Unsupported Kokoro language code: {language_code}") from error
 
