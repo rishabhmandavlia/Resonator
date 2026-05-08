@@ -88,7 +88,7 @@ export function Login() {
                   className="h-11 w-auto max-w-[14rem]"
                 />
                 <p className="mt-2 text-sm uppercase tracking-[0.28em] text-sky-100/80">
-                  AI Voice Generator
+                  AI Text-to-Speech Generator
                 </p>
               </div>
             </div>
