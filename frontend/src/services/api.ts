@@ -313,9 +313,9 @@ class ApiClient {
       ? { ...options.headers }
       : hasRequestBody
         ? {
-          "Content-Type": "application/json",
-          ...options.headers,
-        }
+            "Content-Type": "application/json",
+            ...options.headers,
+          }
         : { ...options.headers };
 
     try {
