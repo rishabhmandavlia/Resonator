@@ -52,7 +52,7 @@ backend/logs/
 *.log
 
 # Local ML assets
-backend/models/
+# backend/models/
 
 # IDE / OS
 .vscode/
