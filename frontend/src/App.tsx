@@ -234,7 +234,7 @@ function AuthSplash() {
           </div>
 
           <p className="text-sm leading-6 text-slate-600">
-            Initializing your AI Voice Generator
+            Initializing System...
           </p>
 
           <div className="flex items-center justify-center gap-2 text-xs font-medium tracking-[0.16em] text-slate-500 uppercase">

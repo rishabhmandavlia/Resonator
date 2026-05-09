@@ -76,3 +76,6 @@ frontend/.typecheck-summary.txt
 logo.svg
 product-name.txt
 product-name.svg
+
+DATABASE_SCHEMA_OVERVIEW.md
+DATABASE_SCHEMA_OVERVIEW.txt
